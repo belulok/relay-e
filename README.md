@@ -10,6 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/belulok/relay-e/actions/workflows/ci.yml"><img src="https://github.com/belulok/relay-e/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/belulok/relay-e/actions/workflows/release.yml"><img src="https://github.com/belulok/relay-e/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/belulok/relay-e/pkgs/container/relay-e"><img src="https://img.shields.io/badge/ghcr.io-relay--e-blue?logo=docker" alt="Container"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="./.nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node"></a>
   <a href="./tsconfig.base.json"><img src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" alt="TypeScript"></a>
@@ -231,10 +233,61 @@ All workspace packages stay in lockstep with the root version for now (single ve
 
 ### Releasing
 
-1. Move `[Unreleased]` items in `CHANGELOG.md` to a dated `[X.Y.Z]` section.
-2. Bump the version in root `package.json`.
-3. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push --tags`.
-4. Create a GitHub Release on the tag with the changelog body.
+The release flow is automated. To cut a new version:
+
+1. Move `[Unreleased]` items in [`CHANGELOG.md`](./CHANGELOG.md) to a dated `[X.Y.Z]` section.
+2. Bump `version` in root [`package.json`](./package.json).
+3. Commit: `git commit -am "chore: release vX.Y.Z"`.
+4. Tag and push:
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin master --tags
+   ```
+
+The [`release.yml`](.github/workflows/release.yml) workflow then automatically:
+
+- Builds a multi-arch (`amd64` + `arm64`) Docker image.
+- Pushes it to **`ghcr.io/belulok/relay-e`** with tags `vX.Y.Z`, `X.Y`, `X.Y.Z`, and `latest`.
+- Creates a [GitHub Release](https://github.com/belulok/relay-e/releases) on the tag with auto-generated notes from merged PRs since the previous tag.
+
+Pre-release suffixes (`-rc`, `-alpha`, `-beta`) are detected and the release is marked as a pre-release automatically.
+
+To roll back: `docker pull ghcr.io/belulok/relay-e:<previous-version>` and redeploy. Tags are immutable on ghcr.io, so older versions remain available indefinitely unless you delete them from the [Packages page](https://github.com/belulok/relay-e/pkgs/container/relay-e).
+
+## Packages
+
+What we publish, where, and on what cadence:
+
+| Artefact | Where | When | How to consume |
+|---|---|---|---|
+| **`relay-e` Docker image** | [GitHub Container Registry](https://github.com/belulok/relay-e/pkgs/container/relay-e) (`ghcr.io/belulok/relay-e`) | On every `v*` tag | `docker pull ghcr.io/belulok/relay-e:latest` |
+| **Workspace npm packages** (`@relay-e/shared`, `db`, `engine`, `providers`, `queue`) | Not published — `"private": true` | — | Source-only, internal to this repo |
+
+### Running the published image
+
+```bash
+docker run --rm -p 3001:3001 \
+  -e DEV_API_KEY=sk_dev_change_me \
+  -e DATABASE_URL=postgres://postgres:postgres@host.docker.internal:5432/relay_e \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  ghcr.io/belulok/relay-e:latest
+```
+
+The same image runs the queue worker — override `CMD`:
+
+```bash
+docker run --rm \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
+  ghcr.io/belulok/relay-e:latest \
+  npm run worker
+```
+
+### Why we don't publish workspace npm packages
+
+The `@relay-e/*` packages are internal building blocks of the engine — not a public SDK. They share types and utilities across the monorepo and are versioned in lockstep with the root. Publishing them as separate npm packages would imply a public API surface we don't yet want to commit to.
+
+When we ship a customer-facing SDK (`@relay-e/sdk-ts`, `@relay-e/sdk-py`), it'll go to the **public npm registry** with its own versioning and release notes — not GitHub Packages. Public npm gives broader reach and avoids forcing customers to authenticate with ghcr.io to install an SDK.
 
 ## Roadmap
 

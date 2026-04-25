@@ -9,6 +9,16 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 
 ### Added
 
+- Multi-stage `Dockerfile` for the API (Node 22 alpine, non-root, HTTP
+  healthcheck, ~1 image runs both the API and the queue worker via
+  CMD override).
+- `.github/workflows/release.yml` — tag-triggered release pipeline that
+  builds a multi-arch (`amd64` + `arm64`) image, pushes to
+  `ghcr.io/belulok/relay-e` with semver + `latest` tags, and creates a
+  GitHub Release with auto-generated notes.
+- README sections covering the Releases flow and what we publish to
+  GitHub Packages (the Docker image only — workspace npm packages stay
+  `private`).
 - Vitest test suite covering four layers: unit (`@relay-e/shared`,
   registries, prompt builder), integration (Context Resolver, agent loop
   with `MockLanguageModelV1` from `ai/test`), API (Hono routes via
@@ -30,6 +40,7 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 
 ### Changed
 
+- CI now watches `master` (matching the GitHub default branch).
 - Ollama is no longer the default offline-LLM story in the docs — it stays
   available behind `docker compose --profile local-llm up -d` for anyone
   who wants fully-offline dev. The recommended cloud path is OpenRouter
