@@ -13,9 +13,11 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
   healthcheck, ~1 image runs both the API and the queue worker via
   CMD override).
 - `.github/workflows/release.yml` — tag-triggered release pipeline that
-  builds a multi-arch (`amd64` + `arm64`) image, pushes to
-  `ghcr.io/belulok/relay-e` with semver + `latest` tags, and creates a
-  GitHub Release with auto-generated notes.
+  builds an amd64 Docker image, pushes to `ghcr.io/belulok/relay-e`
+  with semver + `latest` tags, and creates a GitHub Release with
+  auto-generated notes. Also exposes `workflow_dispatch` for manual
+  re-runs of an existing tag. (arm64 deferred until we move off
+  free-tier QEMU emulation — see release.yml comment.)
 - README sections covering the Releases flow and what we publish to
   GitHub Packages (the Docker image only — workspace npm packages stay
   `private`).

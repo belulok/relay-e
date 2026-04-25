@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build (e.g. v0.0.1)"
+        required: true
 
 permissions:
   contents: write       # create the GitHub Release
@@ -40,12 +45,15 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push image
+      - name: Build and push image (amd64)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # amd64-only by default to keep free-tier runners fast (~3 min vs
+          # 30+ min for arm64 under QEMU). Add linux/arm64 here once you
+          # have a paid runner or use Depot.dev for native cross-compile.
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

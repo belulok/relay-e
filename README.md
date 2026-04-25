@@ -246,7 +246,7 @@ The release flow is automated. To cut a new version:
 
 The [`release.yml`](.github/workflows/release.yml) workflow then automatically:
 
-- Builds a multi-arch (`amd64` + `arm64`) Docker image.
+- Builds a `linux/amd64` Docker image (arm64 will be added once we move off the free-tier QEMU emulation path — Depot.dev or paid native arm64 runners).
 - Pushes it to **`ghcr.io/belulok/relay-e`** with tags `vX.Y.Z`, `X.Y`, `X.Y.Z`, and `latest`.
 - Creates a [GitHub Release](https://github.com/belulok/relay-e/releases) on the tag with auto-generated notes from merged PRs since the previous tag.
 
