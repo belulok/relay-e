@@ -9,19 +9,19 @@ export const baseOptions: BaseLayoutProps = {
         <Image
           src="/logo_light.png"
           alt="Relay-E"
-          width={120}
-          height={28}
+          width={240}
+          height={56}
           priority
-          className="h-7 w-auto dark:hidden"
+          className="h-12 w-auto dark:hidden"
         />
         {/* Dark-mode logo (only visible when html.dark) */}
         <Image
           src="/logo_dark.png"
           alt="Relay-E"
-          width={120}
-          height={28}
+          width={240}
+          height={56}
           priority
-          className="hidden h-7 w-auto dark:block"
+          className="hidden h-12 w-auto dark:block"
         />
       </span>
     ),
