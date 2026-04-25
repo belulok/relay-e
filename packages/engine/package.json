@@ -1,0 +1,25 @@
+{
+  "name": "@relay-e/engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./skills": "./src/skills/index.ts",
+    "./tools": "./src/tools/index.ts",
+    "./context": "./src/context/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@relay-e/db": "*",
+    "@relay-e/providers": "*",
+    "@relay-e/shared": "*",
+    "ai": "^4.0.18",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
