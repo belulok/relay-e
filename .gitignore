@@ -15,3 +15,4 @@ docs/openapi.json
 .next
 .source
 next-env.d.ts
+tsconfig.tsbuildinfo
