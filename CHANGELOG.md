@@ -7,6 +7,24 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 
 ## [Unreleased]
 
+### Added
+
+- `@relay-e/queue` package — BullMQ queues (`agent-runs`, `embeddings`,
+  `scheduled`) with a separate worker process (`npm run worker`). Job
+  processors are stubs; deeper wiring with the agent loop lands with the
+  `/v1/runs` endpoint.
+- OpenRouter provider via the OpenAI-compatible base URL — single key for
+  100+ models (Anthropic, OpenAI, Llama, Mistral, …). Tier router falls
+  back to OpenRouter when Anthropic/OpenAI keys are absent.
+- README hero image at `docs/relay-e.png` plus updated badges.
+
+### Changed
+
+- Ollama is no longer the default offline-LLM story in the docs — it stays
+  available behind `docker compose --profile local-llm up -d` for anyone
+  who wants fully-offline dev. The recommended cloud path is OpenRouter
+  (single key) or Anthropic direct.
+
 ## [0.0.1] - 2026-04-26
 
 ### Added
@@ -31,5 +49,5 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 - Example finance skill with three tools (`get_balance`, `analyze_spending`,
   `transfer_funds` with `requiresApproval` flag).
 
-[Unreleased]: https://github.com/OWNER/REPO/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/OWNER/REPO/releases/tag/v0.0.1
+[Unreleased]: https://github.com/belulok/relay-e/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/belulok/relay-e/releases/tag/v0.0.1

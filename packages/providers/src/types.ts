@@ -1,7 +1,7 @@
 import type { LanguageModel, EmbeddingModel } from "ai";
 import type { Modality } from "@relay-e/shared";
 
-export type ProviderId = "anthropic" | "openai" | "ollama" | "voyage";
+export type ProviderId = "anthropic" | "openai" | "openrouter" | "ollama" | "voyage";
 
 export interface ChatModelDescriptor {
   provider: ProviderId;

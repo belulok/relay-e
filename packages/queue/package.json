@@ -1,0 +1,24 @@
+{
+  "name": "@relay-e/queue",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./queues": "./src/queues/index.ts",
+    "./workers": "./src/workers/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "worker": "tsx src/workers/main.ts"
+  },
+  "dependencies": {
+    "@relay-e/shared": "*",
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -6,13 +6,13 @@
   "description": "Multi-tenant context-aware AI orchestration engine. Skills, tools, and a context resolver in front of any LLM (Anthropic, OpenAI, or local Ollama).",
   "license": "MIT",
   "author": "Sebastian Belulok",
-  "homepage": "https://github.com/OWNER/REPO#readme",
+  "homepage": "https://github.com/belulok/relay-e#readme",
   "bugs": {
-    "url": "https://github.com/OWNER/REPO/issues"
+    "url": "https://github.com/belulok/relay-e/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/REPO.git"
+    "url": "https://github.com/belulok/relay-e.git"
   },
   "keywords": [
     "ai",
@@ -49,7 +49,8 @@
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
     "stack:logs": "docker compose logs -f",
-    "stack:reset": "docker compose down -v && docker compose up -d"
+    "stack:reset": "docker compose down -v && docker compose up -d",
+    "worker": "npm run worker -w @relay-e/queue"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

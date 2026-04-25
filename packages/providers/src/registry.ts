@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 
 export const CHAT_MODELS: Record<string, ChatModelDescriptor> = {
+  // --- Direct Anthropic ---
   "claude-opus-4-7": {
     provider: "anthropic",
     id: "claude-opus-4-7",
@@ -41,6 +42,8 @@ export const CHAT_MODELS: Record<string, ChatModelDescriptor> = {
     contextWindow: 200_000,
     tier: "fast",
   },
+
+  // --- Direct OpenAI ---
   "gpt-4o": {
     provider: "openai",
     id: "gpt-4o",
@@ -59,6 +62,39 @@ export const CHAT_MODELS: Record<string, ChatModelDescriptor> = {
     contextWindow: 128_000,
     tier: "fast",
   },
+
+  // --- OpenRouter (single key, 100+ models) ---
+  // Naming convention: "openrouter:<provider>/<model>". The id passed to the
+  // OpenAI-compatible adapter is everything after the colon.
+  "openrouter:anthropic/claude-sonnet-4": {
+    provider: "openrouter",
+    id: "anthropic/claude-sonnet-4",
+    modalities: ["text", "image", "document"],
+    supportsTools: true,
+    supportsCaching: true,
+    contextWindow: 200_000,
+    tier: "balanced",
+  },
+  "openrouter:openai/gpt-4o": {
+    provider: "openrouter",
+    id: "openai/gpt-4o",
+    modalities: ["text", "image"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 128_000,
+    tier: "balanced",
+  },
+  "openrouter:meta-llama/llama-3.3-70b-instruct": {
+    provider: "openrouter",
+    id: "meta-llama/llama-3.3-70b-instruct",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 131_072,
+    tier: "fast",
+  },
+
+  // --- Ollama (local, optional) ---
   "ollama:llama3.2": {
     provider: "ollama",
     id: "llama3.2",
@@ -84,12 +120,14 @@ export const EMBED_MODELS: Record<string, EmbeddingModelDescriptor> = {
 export interface ProviderRegistryOptions {
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  openrouterApiKey?: string;
   ollamaBaseUrl?: string;
 }
 
 export class ProviderRegistry {
   private anthropic?: ReturnType<typeof createAnthropic>;
   private openai?: ReturnType<typeof createOpenAI>;
+  private openrouter?: ReturnType<typeof createOpenAI>;
   private ollama?: ReturnType<typeof createOllama>;
 
   constructor(opts: ProviderRegistryOptions = {}) {
@@ -98,6 +136,16 @@ export class ProviderRegistry {
 
     const openaiKey = opts.openaiApiKey ?? process.env.OPENAI_API_KEY;
     if (openaiKey) this.openai = createOpenAI({ apiKey: openaiKey });
+
+    const openrouterKey = opts.openrouterApiKey ?? process.env.OPENROUTER_API_KEY;
+    if (openrouterKey) {
+      // OpenRouter is OpenAI-compatible — point the OpenAI adapter at their base URL.
+      this.openrouter = createOpenAI({
+        apiKey: openrouterKey,
+        baseURL: "https://openrouter.ai/api/v1",
+        compatibility: "compatible",
+      });
+    }
 
     const ollamaBase = opts.ollamaBaseUrl ?? process.env.OLLAMA_BASE_URL;
     if (ollamaBase) this.ollama = createOllama({ baseURL: `${ollamaBase}/api` });
@@ -139,6 +187,9 @@ export class ProviderRegistry {
       case "openai":
         if (!this.openai) throw errors.provider("OpenAI not configured (OPENAI_API_KEY missing)");
         return this.openai;
+      case "openrouter":
+        if (!this.openrouter) throw errors.provider("OpenRouter not configured (OPENROUTER_API_KEY missing)");
+        return this.openrouter;
       case "ollama":
         if (!this.ollama) throw errors.provider("Ollama not configured (OLLAMA_BASE_URL missing)");
         return this.ollama;
@@ -158,11 +209,22 @@ export class ProviderRegistry {
           return "claude-opus-4-7";
       }
     }
+    if (this.openrouter) {
+      switch (tier) {
+        case "fast":
+          return "openrouter:meta-llama/llama-3.3-70b-instruct";
+        case "balanced":
+        case "premium":
+          return "openrouter:anthropic/claude-sonnet-4";
+      }
+    }
     if (this.openai) {
       return tier === "fast" ? "gpt-4o-mini" : "gpt-4o";
     }
     if (this.ollama) return "ollama:llama3.2";
-    throw errors.provider("No LLM providers configured");
+    throw errors.provider(
+      "No LLM providers configured — set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL.",
+    );
   }
 }
 

@@ -1,11 +1,19 @@
-# Relay-E
+<p align="center">
+  <img src="./docs/relay-e.png" alt="Relay-E" width="320" />
+</p>
 
-> Multi-tenant context-aware AI orchestration engine. Skills, tools, and a context resolver in front of any LLM — Anthropic, OpenAI, or local Ollama.
+<h1 align="center">Relay-E</h1>
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg)](./tsconfig.base.json)
+<p align="center">
+  <em>Multi-tenant context-aware AI orchestration engine. Skills, tools, and a context resolver in front of any LLM — Anthropic, OpenAI, OpenRouter, or local Ollama.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/belulok/relay-e/actions/workflows/ci.yml"><img src="https://github.com/belulok/relay-e/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="./.nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node"></a>
+  <a href="./tsconfig.base.json"><img src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" alt="TypeScript"></a>
+</p>
 
 The engine sits between an LLM and a customer's data, dynamically pulling
 relevant context before each turn and routing between "just respond" and
@@ -15,14 +23,15 @@ production.
 
 ## Features
 
-- **Provider-agnostic LLM layer** — Anthropic / OpenAI / Ollama via the Vercel AI SDK; tier-based router (`fast` / `balanced` / `premium`) picks the cheapest model that fits the task.
+- **Provider-agnostic LLM layer** — Anthropic / OpenAI / **OpenRouter** (single key for 100+ models) / Ollama (offline) via the Vercel AI SDK; tier-based router (`fast` / `balanced` / `premium`) picks the cheapest model that fits the task.
 - **Skills + Tools registries** — composable units of behaviour. Tools have Zod-validated input schemas; tools that mutate state can be flagged `requiresApproval` for human-in-the-loop gating.
 - **Context Resolver** — pluggable sources (vector search, profile lookups, MCP connectors) fetched in parallel and trimmed to a token budget.
 - **Multi-tenant from day one** — `tenant_id` flows through every layer; Postgres schema is RLS-ready.
 - **Auto-generated OpenAPI 3.1** — single source of truth is the Zod schema; `/openapi.json` and the Scalar `/docs` UI update on the next request when you add a route. No JSDoc, no codegen step.
 - **SSE streaming** — typed event channel: `thinking`, `context_resolved`, `tool_call`, `tool_result`, `usage`, `text`, `done`.
 - **Cost & token accounting** — every LLM call records tokens in/out, cache hits, and USD into `usage_events`.
-- **Local-first dev** — `docker compose up -d` boots the entire stack; add `--profile local-llm` for an Ollama-only mode that needs zero API keys.
+- **Local-first dev** — `docker compose up -d` boots Postgres + Redis. Add `--profile local-llm` for an optional Ollama container if you want fully-offline LLMs; otherwise just set `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` and you're running.
+- **Durable runs (BullMQ)** — long agent runs and background jobs (embedding, summarisation, scheduled triggers) run on a Redis-backed queue, not in the HTTP request path.
 
 ## Quick start
 
@@ -48,6 +57,12 @@ API listens on `http://localhost:3001`.
 - **OpenAPI 3.1 spec**: <http://localhost:3001/openapi.json>
 - **Health**: <http://localhost:3001/health>
 
+In a second terminal, start the queue worker (it runs as its own process so HTTP stays snappy):
+
+```bash
+npm run worker
+```
+
 ### Try it
 
 ```bash
@@ -68,15 +83,18 @@ curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
   -d '{"prompt":"Show my balance and top spending categories.","skills":["financial-advisor"],"stream":true}'
 ```
 
-### Going fully offline (no cloud LLM)
+### LLM provider options
 
-```env
-# .env
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-OLLAMA_BASE_URL=http://localhost:11434
-DEFAULT_PROVIDER=ollama
-```
+You only need **one** of these to run end-to-end:
+
+| Provider | Why pick it | `.env` |
+|---|---|---|
+| **OpenRouter** | One key, 100+ models (Anthropic, OpenAI, Llama, Mistral, …), unified billing | `OPENROUTER_API_KEY=sk-or-...` |
+| **Anthropic** | Direct, lowest latency for Claude, supports prompt caching | `ANTHROPIC_API_KEY=sk-ant-...` |
+| **OpenAI** | Direct, fallback / GPT-specific features | `OPENAI_API_KEY=sk-...` |
+| **Ollama** (offline) | No cloud at all — pulls models locally | `OLLAMA_BASE_URL=http://localhost:11434` |
+
+For Ollama-only mode:
 
 ```bash
 docker compose --profile local-llm up -d
@@ -116,10 +134,12 @@ apps/
 packages/
   shared/             types, errors, logger, content blocks, ids, pricing
   db/                 Drizzle schema, migrations
-  providers/          LLM provider abstraction + tier routing
+  providers/          LLM provider abstraction + tier routing (Anthropic / OpenAI / OpenRouter / Ollama)
   engine/             skills, tools, context resolver, agent loop
+  queue/              BullMQ queues + worker template (agent runs, embeddings)
 docker/               postgres init scripts (vector, pg_trgm, uuid-ossp)
-docker-compose.yml    local stack (Postgres+pgvector, Redis, Ollama profile)
+docker-compose.yml    local stack (Postgres+pgvector, Redis; Ollama behind --profile local-llm)
+docs/                 README assets (logo, diagrams)
 .github/workflows/    CI (typecheck on push/PR)
 ```
 
@@ -174,9 +194,10 @@ All workspace packages stay in lockstep with the root version for now (single ve
 
 ## Roadmap
 
+- Wire `@relay-e/queue` BullMQ runs into `POST /v1/runs` (queued) alongside the existing sync `/messages` path
 - Persist sessions / messages / usage_events to Postgres on every turn
 - Memory compaction + embedding-based history retrieval
-- Inngest for queued / long-running runs + HITL approval gating
+- HITL approval gating using the queue (pause runs at `requiresApproval` tools, resume on `/v1/runs/:id/approve`)
 - MCP connector adapter (so customers plug in any data source)
 - Multi-modal input pipeline (audio → transcript, files → chunked text)
 - Eval harness (`npm run eval`) tracking quality / cost / latency per change
