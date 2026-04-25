@@ -1,13 +1,31 @@
+import Image from "next/image";
 import Link from "next/link";
 
 export default function HomePage() {
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 px-6 py-24 text-center">
-      <div className="space-y-4 max-w-2xl">
+      <div className="space-y-6 max-w-2xl">
+        {/* Light-mode logo */}
+        <Image
+          src="/logo_light.png"
+          alt="Relay-E"
+          width={420}
+          height={210}
+          priority
+          className="mx-auto h-auto w-[260px] sm:w-[320px] dark:hidden"
+        />
+        {/* Dark-mode logo */}
+        <Image
+          src="/logo_dark.png"
+          alt="Relay-E"
+          width={420}
+          height={210}
+          priority
+          className="mx-auto hidden h-auto w-[260px] dark:block sm:w-[320px]"
+        />
         <p className="text-sm font-medium text-fd-muted-foreground">
           Multi-tenant AI orchestration engine
         </p>
-        <h1 className="text-5xl font-bold tracking-tight">Relay-E</h1>
         <p className="text-lg text-fd-muted-foreground">
           Skills, tools, and a context resolver in front of any LLM.
           Anthropic, OpenAI, OpenRouter, or local Ollama. Local-first by design.

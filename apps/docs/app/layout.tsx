@@ -9,6 +9,20 @@ export const metadata = {
   },
   description:
     "Skills, tools, and a context resolver in front of any LLM — Anthropic, OpenAI, OpenRouter, or local Ollama. Multi-tenant, local-first, durable.",
+  // Favicon is auto-injected from app/icon.svg by Next.js — no need to wire `icons` manually.
+  openGraph: {
+    title: "Relay-E",
+    description:
+      "Multi-tenant context-aware AI orchestration engine. Skills, tools, and a context resolver in front of any LLM.",
+    images: ["/logo_dark.png"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Relay-E",
+    description:
+      "Multi-tenant context-aware AI orchestration engine.",
+    images: ["/logo_dark.png"],
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

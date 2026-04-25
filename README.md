@@ -23,7 +23,8 @@ relevant context before each turn and routing between "just respond" and
 (Postgres + pgvector + Redis + Ollama) and ships the same image to
 production.
 
-> **📖 Full documentation**: see [`apps/docs/`](./apps/docs) (Fumadocs site, deployable to Vercel). Run `npm run dev -w @relay-e/docs` for local dev at `http://localhost:3002`.
+> **📖 Full documentation: [relay-e-docs.vercel.app](https://relay-e-docs.vercel.app)** — comprehensive guides, API reference, and deployment instructions.
+> Source: [`apps/docs/`](./apps/docs). Local dev: `npm run dev -w @relay-e/docs` (http://localhost:3002).
 
 ## Features
 
