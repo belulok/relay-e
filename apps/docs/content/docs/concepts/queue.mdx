@@ -49,21 +49,34 @@ docker run ghcr.io/belulok/relay-e:latest npm run worker # worker
 
 ## Job lifecycle
 
-```
-client                           api server                queue            worker
-──────────────────────────────────────────────────────────────────────────────────
-POST /v1/runs ──►
-                ──► validate, create row in `runs` table
-                    add job to relay-e.agent-runs ───────────────►
-                ◄── { run_id: "run_..." }
-GET /v1/runs/:id/events (SSE) ──► subscribe via QueueEvents
-                                                          ◄────── claim job
-                                                                        │
-                                                                        │ run agent loop
-                                                                        │ emit events ─►
-                                                          ◄────── complete job
-                ◄── stream "done" event
-```
+<Mermaid chart={`
+sequenceDiagram
+  autonumber
+  participant Client
+  participant API as API server
+  participant Q as Queue · Redis
+  participant Worker
+
+  Client->>API: POST /v1/runs
+  API->>API: validate · create runs row
+  API->>Q: enqueue agent-runs job
+  API-->>Client: { run_id }
+
+  Client->>API: GET /v1/runs/:id/events (SSE)
+  API->>Q: subscribe (QueueEvents)
+
+  Worker->>Q: claim job
+  loop run agent loop
+    Worker->>Worker: LLM ↔ tool ↔ result
+    Worker-->>Q: emit step events
+    Q-->>API: forward event
+    API-->>Client: SSE frame
+  end
+  Worker->>Q: complete job
+  Q-->>API: done
+  API-->>Client: SSE done
+`} caption="Queued runs survive crashes — re-claimed by the next worker on restart." />
+
 
 Status is reflected in `runs.status`: `queued` → `running` → `awaiting_approval` (HITL) → `done` / `failed`.
 

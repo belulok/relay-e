@@ -5,44 +5,35 @@ description: The full system, layer by layer, and where each piece lives in the 
 
 ## The big picture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  CLIENT                                                     │
-│  Your app's frontend / SDK / direct HTTP                    │
-└────────────────────┬────────────────────────────────────────┘
-                     │ HTTPS / SSE
-┌────────────────────▼────────────────────────────────────────┐
-│  API GATEWAY (Hono + OpenAPIHono)                           │
-│  Auth · Rate limiting · Request ID · Validation · CORS      │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│  ORCHESTRATION CORE (your IP lives here)                    │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │ Session Manager · Memory Compaction                  │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │ Context Resolver (parallel fetch + budget trim)      │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │ Skill Registry · Tool Registry                       │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │ Model Router (fast / balanced / premium)             │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │ Agent Loop (LLM → tool call → result → repeat)       │   │
-│  ├──────────────────────────────────────────────────────┤   │
-│  │ Safety Layer (Zod validation, HITL, guardrails)      │   │
-│  └──────────────────────────────────────────────────────┘   │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-        ┌────────────┼────────────┬──────────────┐
-        │            │            │              │
-┌───────▼──────┐ ┌───▼──────┐ ┌───▼─────┐ ┌──────▼──────┐
-│ LLM PROVIDERS│ │ MCP HUB  │ │ STORAGE │ │ JOB QUEUE   │
-│ Anthropic    │ │ Built-in │ │ Postgres│ │ BullMQ      │
-│ OpenAI       │ │ Custom   │ │ pgvector│ │ + Redis     │
-│ OpenRouter   │ │ Generic  │ │ Redis   │ │ Long agents │
-│ Ollama       │ │          │ │ S3/Blob │ │ Indexing    │
-└──────────────┘ └──────────┘ └─────────┘ └─────────────┘
-```
+<Mermaid chart={`
+flowchart TB
+  Client["<b>Client</b><br/>Your app · SDK · direct HTTP"]
+  Gateway["<b>API Gateway</b> · Hono + OpenAPIHono<br/>Auth · Rate limiting · Request ID · Validation · CORS"]
+
+  subgraph Core["<b>Orchestration Core</b> &nbsp;·&nbsp; your IP lives here"]
+    direction TB
+    Session["Session Manager · Memory Compaction"]
+    CR["Context Resolver<br/>parallel fetch + budget trim"]
+    Reg["Skill Registry · Tool Registry"]
+    Router["Model Router · fast / balanced / premium"]
+    Loop["Agent Loop · LLM ↔ tool ↔ result"]
+    Safety["Safety Layer · Zod · HITL · guardrails"]
+    Session --> CR --> Reg --> Router --> Loop --> Safety
+  end
+
+  LLM["<b>LLM Providers</b><br/>Anthropic · OpenAI · OpenRouter · Ollama"]
+  MCP["<b>MCP Hub</b><br/>built-in · custom · generic"]
+  Storage[("<b>Storage</b><br/>Postgres + pgvector · Redis · S3 / Blob")]
+  Queue["<b>Job Queue</b><br/>BullMQ + Redis · long runs · indexing"]
+
+  Client -- "HTTPS / SSE" --> Gateway
+  Gateway --> Core
+  Core --> LLM
+  Core --> MCP
+  Core --> Storage
+  Core --> Queue
+`} />
+
 
 ## Where each piece lives
 
@@ -65,6 +56,46 @@ Each `packages/*` is an internal workspace package — `private: true`, not publ
 ## Request lifecycle
 
 A single `POST /v1/sessions/:id/messages` flows through:
+
+<Mermaid chart={`
+sequenceDiagram
+  autonumber
+  participant Client
+  participant Gateway as API Gateway
+  participant Resolver as Context Resolver
+  participant Router as Model Router
+  participant LLM
+  participant Tool
+  participant DB as Postgres
+  participant Q as Queue
+
+  Client->>Gateway: POST /v1/sessions/:id/messages
+  Note over Gateway: auth · tenant_id · request_id · rate limit
+  Gateway->>Resolver: resolve(query, skills)
+  par parallel sources
+    Resolver->>DB: vector search · profile · history
+  and
+    Resolver-->>Resolver: trim to token budget
+  end
+  Resolver-->>Gateway: context bundle
+
+  Gateway->>Router: pick model tier
+  Router-->>Gateway: modelKey
+
+  loop until finish_reason = stop
+    Gateway->>LLM: prompt + tools
+    LLM-->>Gateway: tool call
+    Gateway->>Tool: validated execute
+    Tool-->>Gateway: result
+  end
+
+  Gateway->>DB: append usage_events
+  Gateway-->>Client: SSE stream<br/>thinking → tool_call → text → done
+
+  Note right of Q: long agentic runs<br/>+ embedding/compaction<br/>run on the queue,<br/>not in the request path
+`} caption="Sync request lifecycle. Long-running runs move to the queue and stream over /v1/runs/:id/events instead." />
+
+In words:
 
 1. **Edge** → Cloudflare or your load balancer (TLS, DDoS).
 2. **Gateway** → Hono middleware: auth (`Authorization: Bearer …`), tenant resolution, request-id stamp, rate limit check.

@@ -7,14 +7,32 @@ The Context Resolver is the layer that decides **what the model gets to see** be
 
 ## Mental model
 
-```
-Request ──► [user_profile_source]──┐
-            [vector_search_source]─┤
-            [recent_messages_src]──┼──► merge ──► sort by priority ──► trim to budget ──► prompt
-            [mcp_tools_resources]──┤
-            [your_custom_source]───┘
-              (all run in parallel, with timeouts)
-```
+<Mermaid chart={`
+flowchart LR
+  Req(["ContextRequest"])
+  S1["user_profile"]
+  S2["vector_search"]
+  S3["recent_messages"]
+  S4["mcp_resources"]
+  S5["your_custom_source"]
+
+  Req --> S1
+  Req --> S2
+  Req --> S3
+  Req --> S4
+  Req --> S5
+
+  S1 --> Merge
+  S2 --> Merge
+  S3 --> Merge
+  S4 --> Merge
+  S5 --> Merge
+
+  Merge["Merge"] --> Sort["Sort by priority<br/>(desc)"]
+  Sort --> Trim["Trim to<br/>token budget"]
+  Trim --> Out([prompt])
+`} caption="All sources fetch in parallel with timeouts, then are sorted and trimmed before reaching the model." />
+
 
 Every source has the same shape:
 

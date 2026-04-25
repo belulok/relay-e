@@ -9,12 +9,20 @@ It's not a chat UI. It's not a prompt-template helper. It's the thing your chat 
 
 ## The mental model
 
-```
-Your app  ──►  Relay-E  ──►  LLM
-              ▲     │
-              │     ▼
-        Customer data (your DB / API / MCP)
-```
+<Mermaid chart={`
+flowchart LR
+  App["<b>Your app</b>"]
+  RE["<b>Relay-E</b><br/>orchestration engine"]
+  LLM["<b>LLM</b><br/>Anthropic · OpenAI<br/>OpenRouter · Ollama"]
+  Data[("<b>Customer data</b><br/>your DB / API / MCP")]
+
+  App --> RE
+  RE --> LLM
+  LLM -.-> RE
+  RE <--> Data
+  RE --> App
+`} caption="Relay-E is the layer between your app and the LLM, dynamically pulling customer data before each turn." />
+
 
 Three things happen between request and response:
 

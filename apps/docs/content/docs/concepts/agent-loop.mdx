@@ -54,17 +54,25 @@ The actual implementation lives in [`packages/engine/src/agent/loop.ts`](https:/
 
 `generateText({ tools, maxSteps })` from the Vercel AI SDK handles the inner cycle:
 
-```
-You → SDK         SDK → LLM            LLM response          SDK → you
-─────────────────────────────────────────────────────────────────────
-prompt+tools  →   "What's my balance?"
-                                    ←  call get_balance(acct=42)
-                  execute it (your handler) → { balance: 4231.55 }
-                  prompt + first turn + tool result
-                                    ←  "Your balance is $4,231.55."
-                                       finish_reason: "stop"
-                                                              text + usage
-```
+<Mermaid chart={`
+flowchart TD
+  Start(["User message"]) --> Resolve["Resolve context<br/>parallel · budget-trimmed"]
+  Resolve --> Build["Build system prompt<br/>skills · examples · context"]
+  Build --> Call["Call LLM"]
+  Call --> Decide{"Tool calls?"}
+  Decide -- "no · finish_reason: stop" --> Stream["Stream text + usage"]
+  Decide -- "yes" --> Validate["Validate input · Zod"]
+  Validate --> Approve{"requiresApproval?"}
+  Approve -- "yes" --> Pause["Emit tool_awaiting_approval"]
+  Approve -- "no" --> Execute["Execute tool"]
+  Pause --> Execute
+  Execute --> Append["Append result to history"]
+  Append -- "loop until finish_reason or maxSteps" --> Call
+  Stream --> Done(["done"])
+
+  classDef io fill:transparent,stroke-dasharray:4 4
+  class Start,Done io
+`} caption="The agent loop. maxSteps caps how many tool-call rounds the model gets — default 8." />
 
 `maxSteps` caps how many tool-call rounds the model gets. A skill that needs to chain `search_orders → get_order_details → analyze` needs at least 3 steps. The default is 8.
 
