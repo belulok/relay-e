@@ -1,0 +1,165 @@
+---
+title: Streaming with SSE
+description: Connect a frontend to the engine's typed event stream.
+---
+
+The chat endpoint streams Server-Sent Events when called with `stream: true`. Your frontend renders typed events as they arrive — "thinking..." indicators, tool call inspectors, and the final text.
+
+## Basic shape
+
+```bash
+curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $DEV_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is my balance?",
+    "skills": ["financial-advisor"],
+    "stream": true
+  }'
+```
+
+You get a stream of SSE frames:
+
+```
+event: thinking
+data: {"type":"thinking","step":"resolving_context"}
+
+event: context_resolved
+data: {"type":"context_resolved","sources":["skill_guardrails"],"tokenEstimate":12}
+
+event: tool_call
+data: {"type":"tool_call","tool_call_id":"tc_...","name":"get_balance","input":{...}}
+
+event: tool_result
+data: {"type":"tool_result","tool_call_id":"tc_...","name":"get_balance","output":{...}}
+
+event: usage
+data: {"type":"usage","usage":{"tokens_in":2103,"tokens_out":312,"cost_usd":0.005},"model":"claude-sonnet-4-6"}
+
+event: text
+data: {"text":"Your current balance is $4,231.55."}
+
+event: done
+data: {"type":"done","usage":{...},"finish_reason":"stop"}
+```
+
+## Event reference
+
+| Event | When | Use it for |
+|---|---|---|
+| `thinking` | Phase change inside the engine | "Thinking…" / "Calling model…" indicator |
+| `context_resolved` | All sources returned | Show "found 7 relevant docs" |
+| `tool_call` | Model decides to call a tool | Render the tool name + input collapsed |
+| `tool_awaiting_approval` | A `requiresApproval` tool was called | Show approve/reject UI; pause |
+| `tool_result` | Tool returned (or threw) | Show the result inline; mark errors |
+| `text_delta` | (future) token-level text | Render text as it arrives |
+| `text` | Full model text | The final answer |
+| `usage` | After the model call | Show cost / token count |
+| `done` | Loop finished | Hide loaders, mark message complete |
+| `error` | Anything threw | Show error toast |
+
+## Frontend (React + EventSource)
+
+Native `EventSource` doesn't support `POST`. Use `fetch` with a manual SSE parser, or a small library. Here's the bare-hands version:
+
+```tsx title="components/Chat.tsx"
+import { useState } from "react";
+
+export function Chat() {
+  const [events, setEvents] = useState<any[]>([]);
+  const [text, setText] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  async function send(prompt: string) {
+    setEvents([]);
+    setText("");
+    setIsStreaming(true);
+
+    const res = await fetch("/api/relay-e/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, skills: ["support-agent"], stream: true }),
+    });
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by blank lines
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const data = frame.split("\n").find(l => l.startsWith("data:"));
+        if (!data) continue;
+        const event = JSON.parse(data.slice(5).trim());
+        setEvents(prev => [...prev, event]);
+        if (event.type === "text" || (typeof event.text === "string")) {
+          setText(event.text);
+        }
+      }
+    }
+    setIsStreaming(false);
+  }
+
+  return (
+    <div>
+      {/* Render events as a thinking/tools timeline */}
+      <ul>
+        {events.map((e, i) => (
+          <li key={i} className="text-sm text-muted-foreground">
+            {e.type === "tool_call" && <span>↳ Calling {e.name}…</span>}
+            {e.type === "tool_result" && <span>✓ {e.name} done</span>}
+            {e.type === "usage" && <span>🪙 {e.usage.tokens_in + e.usage.tokens_out} tokens</span>}
+          </li>
+        ))}
+      </ul>
+      {text && <p>{text}</p>}
+    </div>
+  );
+}
+```
+
+Don't expose the engine's API key to the browser — proxy through your own backend (`/api/relay-e/*`) and forward the request server-side.
+
+## Frontend (Vercel AI SDK `useChat`)
+
+If you already use `@ai-sdk/react`'s `useChat`, you can adapt by writing a thin server route that converts Relay-E's SSE events into the AI SDK's expected format. Roadmap: ship a `@relay-e/sdk-react` that does this for you.
+
+## Backpressure and cancellation
+
+When the client disconnects mid-stream:
+
+- The HTTP handler's `c.req.raw.signal.aborted` becomes true.
+- The engine's `AbortController` propagates to all in-flight tool calls and the LLM call.
+- The model call cancels; tools that respect `ctx.signal` cancel.
+- The server stops emitting and closes the SSE channel cleanly.
+
+Make sure your tools pass `ctx.signal` to any `fetch` / DB call:
+
+```ts
+execute: async (input, ctx) => {
+  const res = await fetch(url, { signal: ctx.signal });
+  // ...
+}
+```
+
+## Reconnection
+
+SSE has built-in reconnection via `Last-Event-ID`. The current implementation doesn't durably store events for replay — if the user disconnects mid-run, they'll miss the events that fired during the gap. The **queued runs** path (roadmap, `/v1/runs/:id/events`) replays events from the `runs.steps[]` audit log, which makes reconnection robust.
+
+For now: keep sync runs short (under 30s) and use queued runs for anything longer.
+
+## Latency hygiene
+
+| Trick | What it buys |
+|---|---|
+| Pre-warm the session on page load | First message TTFT goes from ~800ms to ~200ms |
+| Pre-fetch user profile in the resolver | First tool call uses cached profile |
+| Stream from byte 1 — no buffering | Skip — already done |
+| Edge-deploy the gateway, regional engine | -100-300ms RTT for global users |

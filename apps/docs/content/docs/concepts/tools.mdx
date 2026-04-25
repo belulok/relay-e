@@ -1,0 +1,132 @@
+---
+title: Tools
+description: Tools are typed functions the model can call. Schemas are Zod, validation is automatic, dangerous tools require approval.
+---
+
+A **tool** is a typed function the LLM can call. The model decides when to call which one based on the conversation; Relay-E validates the input, executes the handler, and feeds the result back into the loop.
+
+## Anatomy of a tool
+
+```ts
+import { defineTool } from "@relay-e/engine";
+import { z } from "zod";
+
+defineTool({
+  name: "get_balance",
+  description: "Return the current balance for a user's account.",
+  inputSchema: z.object({
+    account_id: z.string().describe("Account identifier"),
+  }),
+  execute: async ({ account_id }, ctx) => {
+    return { account_id, balance_usd: 4231.55, currency: "USD" };
+  },
+});
+```
+
+| Field | What it does |
+|---|---|
+| `name` | Stable identifier the model uses to call this tool. |
+| `description` | The model reads this to decide when to call. **Write it well.** |
+| `inputSchema` | A Zod schema. The engine validates input *before* `execute` runs. Invalid input is reported back to the model so it can retry. |
+| `execute` | Async function that returns whatever the model should see next. |
+| `requiresApproval` | If true, the run pauses for human approval before `execute` fires. |
+
+## Description-driven dispatching
+
+The model picks tools by reading their descriptions, not their names. A vague `description` is the #1 cause of "the model never calls my tool."
+
+**Good:**
+
+> Search transactions by merchant name and amount range. Returns the top 20 matches sorted by date desc. Use this when the user asks about specific past purchases.
+
+**Bad:**
+
+> Searches transactions.
+
+## The `ctx` parameter
+
+Every tool handler receives a context object with the request scope:
+
+```ts
+interface ToolContext {
+  tenantId: string;
+  userId?: string;
+  sessionId?: string;
+  runId?: string;
+  config: Record<string, unknown>;
+  logger: Logger;
+  signal: AbortSignal;
+}
+```
+
+Use `ctx.tenantId` to scope every database query you make. Use `ctx.signal` to abort long-running work if the client disconnects.
+
+## Dangerous tools — `requiresApproval`
+
+For destructive actions (transfers, account closures, sending emails), set `requiresApproval: true`:
+
+```ts
+defineTool({
+  name: "transfer_funds",
+  description: "Transfer funds between two accounts.",
+  requiresApproval: true,
+  inputSchema: z.object({
+    from_account: z.string(),
+    to_account: z.string(),
+    amount_usd: z.number().positive(),
+  }),
+  execute: async (input) => ({
+    transfer_id: `xfer_${crypto.randomUUID()}`,
+    status: "pending_approval",
+    ...input,
+  }),
+});
+```
+
+When the model calls this tool, the agent loop emits a `tool_awaiting_approval` event with the proposed input. The run pauses (in queued mode) until your app calls `POST /v1/runs/:id/approve` (roadmap — synchronous mode currently emits the event but does not block).
+
+This is the **single most important safety primitive** for production agents. Use it generously.
+
+## Validation — what happens on bad input
+
+When the model emits a tool call with parameters that don't match the Zod schema:
+
+1. The engine **does not** call your `execute`.
+2. It returns the Zod error to the model as the tool result.
+3. The model retries (within the `maxSteps` budget) with corrected input.
+
+This gives you bullet-proof input handling without writing defensive code in your handler.
+
+## Output — keep it small
+
+The tool's return value is appended to the conversation as a user message. Big payloads burn tokens. Two patterns:
+
+| Bad | Good |
+|---|---|
+| Return raw 200KB JSON dump | Summarise to the few fields the model needs |
+| Return all 500 transactions | Return top 20 + a count + a "truncated" flag |
+| Stringify a 10MB CSV | Write to S3, return the URL + summary |
+
+If the result is genuinely large, return a `file_id` and let the model decide whether to fetch it via a follow-up tool.
+
+## Where to put tool code
+
+For now, in [`apps/api/src/bootstrap/registries.ts`](https://github.com/belulok/relay-e/blob/master/apps/api/src/bootstrap/registries.ts).
+
+For tools that wrap an external API or DB:
+
+- **Same repo, direct call** — fine for small projects.
+- **MCP server** — recommended for anything you'll reuse. See [Guides → Connecting your data](/docs/guides/connecting-data).
+- **REST adapter** — if your service already has a REST API, use the generic REST connector (roadmap).
+
+## Reference
+
+```ts
+interface ToolDefinition<I, O> {
+  name: string;
+  description: string;
+  inputSchema: z.ZodType<I>;
+  requiresApproval?: boolean;
+  execute: (input: I, ctx: ToolContext) => Promise<O>;
+}
+```

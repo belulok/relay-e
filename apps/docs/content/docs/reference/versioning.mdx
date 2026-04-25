@@ -1,0 +1,117 @@
+---
+title: Versioning
+description: SemVer 2.0, with the pre-1.0 caveat that breaking changes can land in minor releases. Always flagged in the changelog.
+---
+
+Relay-E follows [Semantic Versioning 2.0](https://semver.org/spec/v2.0.0.html). All workspace packages stay in lockstep with the root version (single version across the monorepo).
+
+## What changes mean what
+
+| Bump | When | Examples |
+|---|---|---|
+| **Patch** `0.0.x` | Bug fixes, internal refactors, no public surface change | Fix a memory leak; tighten a Zod validator |
+| **Minor** `0.x.0` | Backwards-compatible additions | New endpoint; new event in the SSE stream; new provider |
+| **Major** `x.0.0` | Breaking changes to the HTTP API, SDK surface, or persisted data | Rename a field; remove a deprecated route; migration that changes a column type |
+
+### Pre-1.0 caveat
+
+While the project is `0.x.y`, **breaking changes may land in minor releases**. They will always be:
+
+- Called out in [`CHANGELOG.md`](https://github.com/belulok/relay-e/blob/master/CHANGELOG.md) under a **BREAKING:** entry
+- Documented in the GitHub Release notes
+- Versioned (you can pin to the previous tag indefinitely)
+
+Once we ship 1.0, breaking changes only land on majors.
+
+## Cutting a release
+
+The flow is automated by [`.github/workflows/release.yml`](https://github.com/belulok/relay-e/blob/master/.github/workflows/release.yml):
+
+```bash
+# 1. Move [Unreleased] items in CHANGELOG.md into a dated [X.Y.Z] section.
+# 2. Bump the version in root package.json.
+# 3. Commit:
+git commit -am "chore: release vX.Y.Z"
+
+# 4. Tag and push:
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin master --tags
+```
+
+The tag push triggers the workflow, which:
+
+- Builds an `amd64` Docker image.
+- Pushes to `ghcr.io/belulok/relay-e` with tags `vX.Y.Z`, `X.Y`, `X.Y.Z`, `latest`.
+- Creates a GitHub Release with auto-generated notes diffed from the previous tag.
+- Pre-release suffixes (`-rc`, `-alpha`, `-beta`) are auto-flagged as pre-releases.
+
+## Pinning
+
+In production, pin to a specific tag. Don't run `:latest`:
+
+```yaml
+relay-e:
+  image: ghcr.io/belulok/relay-e:v0.0.1   # not :latest
+```
+
+You'll get notifications when new versions ship via GitHub Releases. Read the changelog, decide when to upgrade, bump the tag.
+
+## Pre-release tags
+
+For testing pre-releases:
+
+```bash
+git tag -a v0.1.0-rc.1 -m "v0.1.0 release candidate 1"
+git push origin v0.1.0-rc.1
+```
+
+The release workflow detects `-rc`, `-alpha`, `-beta` suffixes and:
+
+- Marks the GitHub Release as **Pre-release**.
+- Still publishes to ghcr.io (so you can `docker pull ghcr.io/belulok/relay-e:0.1.0-rc.1`).
+- Does **not** roll the `latest` tag forward.
+
+## Rollback
+
+Tags on ghcr.io are immutable, so older versions stay available indefinitely (unless explicitly deleted from the [Packages page](https://github.com/belulok/relay-e/pkgs/container/relay-e)):
+
+```bash
+docker pull ghcr.io/belulok/relay-e:v0.0.1
+# Update your compose file's tag, redeploy
+```
+
+For database migrations: schema changes are forward-only by default. To roll back a schema change, you'll need to write a manual `down` migration and apply it. Plan migrations carefully on production data.
+
+## Workspace packages
+
+All `@relay-e/*` packages share the root version:
+
+```
+@relay-e/api       0.0.1
+@relay-e/db        0.0.1
+@relay-e/engine    0.0.1
+@relay-e/providers 0.0.1
+@relay-e/queue     0.0.1
+@relay-e/shared    0.0.1
+```
+
+When the project graduates from `0.x`, we'll likely move to [Changesets](https://github.com/changesets/changesets) for per-package versioning. Until then, lockstep keeps things simple.
+
+## Checking your installed version
+
+```bash
+docker exec <container> cat /app/package.json | grep version
+```
+
+Or via the API:
+
+```bash
+curl http://localhost:3001/health
+# { "status": "ok", "version": "0.0.1", "uptime_s": 123 }
+```
+
+## Following along
+
+- **GitHub Releases**: [github.com/belulok/relay-e/releases](https://github.com/belulok/relay-e/releases)
+- **CHANGELOG.md**: source of truth for what changed
+- **Container registry**: [ghcr.io/belulok/relay-e](https://github.com/belulok/relay-e/pkgs/container/relay-e)

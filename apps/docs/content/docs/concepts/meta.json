@@ -1,0 +1,13 @@
+{
+  "title": "Concepts",
+  "icon": "Brain",
+  "pages": [
+    "skills",
+    "tools",
+    "context-resolver",
+    "agent-loop",
+    "providers",
+    "database",
+    "queue"
+  ]
+}

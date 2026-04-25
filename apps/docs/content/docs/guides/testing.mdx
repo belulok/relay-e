@@ -1,0 +1,164 @@
+---
+title: Testing
+description: Vitest covers four layers — unit, integration, API, and database. ~500ms full run.
+---
+
+Tests run on [Vitest](https://vitest.dev) — native ESM, fast, and Jest-compatible API. Add a test, get instant feedback, ship with confidence.
+
+## Run them
+
+```bash
+npm test                # all tests once
+npm run test:watch      # watch mode
+npm run test:cov        # coverage (text + html + lcov)
+npm run test:db         # also run database tests (requires test DB)
+```
+
+A green run currently shows **37 tests passing in ~500ms** with one DB test skipped (the DB test opts in via `RELAY_E_TEST_DB=1`).
+
+## Layers
+
+| Layer | Where | Tests cover |
+|---|---|---|
+| **Unit** | `packages/*/src/**/*.test.ts` | Pure functions: token math, errors, ids, registries, prompt builder |
+| **Integration** | `packages/engine/src/**/*.test.ts` | Context Resolver across multiple sources; agent loop with `MockLanguageModelV1` |
+| **API** | `apps/api/src/**/*.test.ts` | Routes via `app.fetch(new Request(...))` — no port binding |
+| **Database** | `packages/db/src/**/*.test.ts` | Real Postgres + transaction rollback. Auto-skipped without `RELAY_E_TEST_DB=1` |
+
+## Unit example
+
+```ts title="packages/shared/src/tokens.test.ts"
+import { describe, it, expect } from "vitest";
+import { priceUsage } from "./tokens.js";
+
+describe("priceUsage", () => {
+  it("computes USD cost from token counts", () => {
+    const usage = priceUsage(
+      { input_per_mtok_usd: 3, output_per_mtok_usd: 15 },
+      { input: 1_000_000, output: 500_000 },
+    );
+    expect(usage.cost_usd).toBeCloseTo(3 + 7.5);
+  });
+});
+```
+
+## Integration example with `MockLanguageModelV1`
+
+The Vercel AI SDK ships `MockLanguageModelV1` for testing without hitting a real provider:
+
+```ts title="packages/engine/src/agent/loop.test.ts"
+import { MockLanguageModelV1 } from "ai/test";
+import { runAgent } from "./loop.js";
+
+const model = new MockLanguageModelV1({
+  doGenerate: async () => ({
+    rawCall: { rawPrompt: null, rawSettings: {} },
+    finishReason: "stop",
+    usage: { promptTokens: 100, completionTokens: 50 },
+    text: "Hello, world.",
+  }),
+});
+
+const result = await runAgent(/* with model */);
+expect(result.text).toBe("Hello, world.");
+expect(result.usage.tokens_in).toBe(100);
+```
+
+You can mock multi-step responses, tool calls, errors — anything you need to assert against the loop's behaviour.
+
+## API tests via `app.fetch()`
+
+Hono is web-standard, so you don't need to bind a port:
+
+```ts title="apps/api/src/routes/health.test.ts"
+import { healthRoutes } from "./health.js";
+
+it("returns ok", async () => {
+  const res = await healthRoutes.fetch(new Request("http://localhost/health"));
+  expect(res.status).toBe(200);
+  const body = await res.json() as { status: string };
+  expect(body.status).toBe("ok");
+});
+```
+
+Faster than spinning up a real server, and the same code runs in CI without a port.
+
+## Database tests with rollback
+
+The `dbTestsEnabled` flag (set by `RELAY_E_TEST_DB=1`) gates these so the suite stays fast for unit-only runs:
+
+```ts title="packages/db/src/schema.test.ts"
+import { dbTestsEnabled, openTestDb } from "./test-utils.js";
+import { tenants } from "./schema.js";
+
+const dbDescribe = dbTestsEnabled ? describe : describe.skip;
+
+dbDescribe("Postgres schema", () => {
+  it("round-trips an insert", async () => {
+    const { db, close } = await openTestDb();
+    try {
+      const [row] = await db.insert(tenants).values({ name: "t" }).returning();
+      expect(row.name).toBe("t");
+      await db.delete(tenants).where(eq(tenants.id, row.id));
+    } finally {
+      await close();
+    }
+  });
+});
+```
+
+Local setup:
+
+```bash
+docker exec relay-e-postgres psql -U postgres -c "CREATE DATABASE relay_e_test;"
+DATABASE_URL_TEST=postgres://postgres:postgres@localhost:5432/relay_e_test \
+  npm run db:migrate
+RELAY_E_TEST_DB=1 npm test
+```
+
+CI provisions a `pgvector/pgvector:pg16` service container, applies migrations, and runs the full suite on every PR.
+
+## TDD workflow
+
+```bash
+npm run test:watch
+```
+
+Vitest re-runs only the affected tests on save. Pair with `// biome-ignore` or your editor's red-green test signal for a tight TDD loop.
+
+For a failing test → green → refactor cycle:
+
+1. Write the test for the behaviour you want.
+2. See it fail (`vi.fn()` called but assertion mismatch is fine — you'll fix the production code next).
+3. Implement until green.
+4. Refactor with the safety net.
+
+## Mocking tips
+
+```ts
+import { vi } from "vitest";
+
+// Mock a single import
+vi.mock("@/lib/feature-flags", () => ({
+  isEnabled: vi.fn(() => true),
+}));
+
+// Spy on a method
+const spy = vi.spyOn(myObj, "method").mockReturnValue("stub");
+expect(spy).toHaveBeenCalledWith("expected-arg");
+```
+
+Don't over-mock. Mock at the boundary (HTTP, DB, time) and let real code run inside.
+
+## Coverage
+
+```bash
+npm run test:cov
+```
+
+Generates `coverage/index.html`. Don't chase 100% — chase coverage where it matters: business logic in `packages/engine`, the agent loop, error paths.
+
+## What's next
+
+- **Eval harness** — beyond unit tests, score the engine on a fixed set of representative prompts. LLM-as-judge or rule-based. Roadmap.
+- **Cassettes** — record-and-replay LLM calls so tests are deterministic and don't burn API credits. Library: [vcr-ts](https://github.com/...).

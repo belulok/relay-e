@@ -1,0 +1,5 @@
+{
+  "title": "Deployment",
+  "icon": "Server",
+  "pages": ["docker", "self-hosted", "observability"]
+}

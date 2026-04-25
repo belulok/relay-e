@@ -1,0 +1,87 @@
+---
+title: Roadmap
+description: What's coming, ordered by ROI. Pre-1.0; subject to change.
+---
+
+This is a living document. The state of `master` is the source of truth — this page captures the priority order.
+
+## Near-term (next minor releases)
+
+### Persistence in the request path
+Today sync runs don't write messages to Postgres. The DB schema is ready; it's a wire-up. Lands when sessions become real (memory across turns, not just within one).
+
+### Memory compaction
+Long sessions exceed any context window. The plan: keep last N turns verbatim, summarise older turns into a running memory document, embed individual old turns and retrieve when relevant.
+
+### Queued runs (`/v1/runs`)
+Long agentic runs (search, summarise 100 docs) move to BullMQ. Sync chat stays in the request handler. The queue scaffolding is already in `@relay-e/queue`; the API surface is the missing piece.
+
+### HITL approval flow (`/v1/runs/:id/approve`)
+For tools flagged `requiresApproval`, the queued path pauses, the API exposes approve/reject endpoints, the run resumes. The lock primitive exists; the HTTP routes don't yet.
+
+### MCP connector adapter
+Today, tools are TypeScript. With MCP support, customers point Relay-E at an MCP server (their own or a standard one — Stripe, Plaid, etc.) and get tools + resources for free. This is the unlock for "real domain integrations without forking."
+
+### Skill-as-config
+Skills loadable from JSON / DB / environment. Eliminates the fork requirement for most use cases. Schema is already serialisable.
+
+## Medium-term
+
+### TypeScript SDK (`@relay-e/sdk-ts`)
+A first-class typed client published to public npm. Replaces the current "generate from OpenAPI" path with something with hand-written ergonomics — streaming helpers, retry logic, error types.
+
+### Python SDK (`@relay-e/sdk-py`)
+Same story for Python.
+
+### Multi-modal input pipeline
+Audio → transcript (Whisper / Deepgram), files → chunked text + embeddings, images → vision-capable models. Pipeline is scaffolded; the tools aren't wired.
+
+### Eval harness (`npm run eval`)
+A fixed dataset of representative prompts run on every PR. LLM-as-judge or rule-based scoring. Tracks quality / cost / latency over time. Without this, optimization changes ship blindly.
+
+### Per-tenant cost guardrails
+Hard token quotas, soft warnings at 80%, automatic cutoffs. First-class billing primitive.
+
+### Per-tenant API keys
+Replaces `DEV_API_KEY` with a key issuance + revocation flow. Foundation for proper multi-tenant SaaS.
+
+### Observability integrations
+First-class Langfuse / Helicone / OpenTelemetry hooks. Today the data shape is structured but the integrations are bring-your-own.
+
+## Longer-term
+
+### Hosted version (`relay-e.com`)
+Managed Relay-E with a dashboard, billing, and zero ops. The OSS engine remains the same code — the hosted version adds the management plane.
+
+### Web dashboard
+Skill / tool / connector management UI. Live request inspector. Usage analytics.
+
+### Bull Board for queues
+Real-time view of job state, retries, failures.
+
+### Multi-arch Docker builds
+arm64 alongside amd64. Currently amd64-only because arm64 under QEMU on free GitHub runners is too slow. Lands when we move to native arm64 runners (Depot.dev or paid runners).
+
+### RLS enforcement
+Postgres Row-Level Security policies enforced by default in production. Belt-and-braces multi-tenant isolation.
+
+### Sharding by tenant
+When one Postgres can't hold all tenants. Years away — most teams won't get there.
+
+## What we're explicitly not building
+
+| Idea | Why not |
+|---|---|
+| Custom prompt-template DSL | The model is the template engine. System prompts as plain strings are simpler. |
+| Fine-tuning infrastructure | Frontier models + good RAG covers 95%. Use OpenAI/Anthropic API-based fine-tuning when you need the last 5%. |
+| Our own vector database | pgvector is fine for millions of vectors. Switch only if we genuinely outgrow it. |
+| LangChain compatibility layer | LangChain's abstractions don't match ours. Migrating from LangChain means rewriting your skills/tools — that's intentional. |
+| In-house model serving | Use OpenRouter / Ollama / your provider of choice. Hosting models isn't our value-add. |
+
+## How to influence priorities
+
+- **Open an issue** on GitHub with a use case.
+- **PRs welcome** — start with a small one to align on style; we'll iterate.
+- **Discussions** for "should we…" questions before code.
+
+This roadmap reflects what's most valuable for the most users. If your specific need isn't here, that's a signal it's worth surfacing.

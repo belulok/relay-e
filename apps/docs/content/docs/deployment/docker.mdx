@@ -1,0 +1,178 @@
+---
+title: Docker
+description: The published image, the bundled compose, environment variables, and a production-ready setup.
+---
+
+The fastest path to running Relay-E is the official Docker image — `ghcr.io/belulok/relay-e:latest`. The same image runs the API, the queue worker, or anything else (override `CMD`).
+
+## The published image
+
+```bash
+docker pull ghcr.io/belulok/relay-e:latest
+```
+
+| Tag | Use |
+|---|---|
+| `latest` | Most recent release. Convenient; volatile. |
+| `v0.0.1` | Specific tag. **Recommended for production** — pin and update deliberately. |
+| `0.0` | Most recent patch in the 0.0 minor. Rolls forward on patch releases. |
+| `0.0.1` | Same as `v0.0.1` without the `v`. |
+
+Built on every `v*` tag push by [`.github/workflows/release.yml`](https://github.com/belulok/relay-e/blob/master/.github/workflows/release.yml). See [Reference → Versioning](/docs/reference/versioning).
+
+## Bundled `docker-compose.yml`
+
+Clone the repo and you get a working stack:
+
+```bash
+git clone https://github.com/belulok/relay-e.git
+cd relay-e
+cp .env.example .env
+# Edit .env — set OPENROUTER_API_KEY (or another provider)
+npm run stack:up   # boots Postgres + Redis
+```
+
+For fully offline development, also boot Ollama:
+
+```bash
+docker compose --profile local-llm up -d
+docker exec relay-e-ollama ollama pull llama3.2
+```
+
+## Production: a complete `docker-compose.yml`
+
+For a self-hosted deployment alongside your existing app:
+
+```yaml title="production/docker-compose.yml"
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: relay_e
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d relay_e"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  relay-e:
+    image: ghcr.io/belulok/relay-e:v0.0.1
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      DEV_API_KEY: ${RELAY_E_API_KEY}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/relay_e
+      REDIS_URL: redis://redis:6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LOG_LEVEL: info
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  relay-e-worker:
+    image: ghcr.io/belulok/relay-e:v0.0.1
+    command: ["npm", "run", "worker"]
+    depends_on:
+      redis: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/relay_e
+      REDIS_URL: redis://redis:6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LOG_LEVEL: info
+      NODE_ENV: production
+    restart: unless-stopped
+
+  relay-e-migrate:
+    image: ghcr.io/belulok/relay-e:v0.0.1
+    command: ["npm", "run", "db:migrate"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/relay_e
+    restart: "no"
+
+volumes:
+  pgdata:
+  redisdata:
+```
+
+```bash
+# .env
+POSTGRES_PASSWORD=<long-random-string>
+RELAY_E_API_KEY=<long-random-string>
+OPENROUTER_API_KEY=sk-or-v1-...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+```bash
+docker compose up -d
+```
+
+## Required environment variables
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `DATABASE_URL` | yes | — | Postgres + pgvector |
+| `REDIS_URL` | yes | — | Redis 7+ |
+| `DEV_API_KEY` | yes (dev) | — | The bearer token. Replace with proper auth in prod. |
+| `OPENROUTER_API_KEY` | one of these | — | OpenRouter |
+| `ANTHROPIC_API_KEY` | one of these | — | Anthropic direct |
+| `OPENAI_API_KEY` | one of these | — | OpenAI direct |
+| `OLLAMA_BASE_URL` | one of these | — | Local LLM |
+| `API_PORT` | no | `3001` | HTTP port |
+| `API_HOST` | no | `0.0.0.0` | Bind host |
+| `LOG_LEVEL` | no | `info` | `silent` / `debug` / `info` / `warn` / `error` |
+| `NODE_ENV` | no | `development` | Set to `production` |
+
+## Healthcheck
+
+The image ships with an HTTP healthcheck (no curl needed):
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+ (process.env.API_PORT||3001) +'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+```
+
+This is what `docker ps` reads to mark the container `(healthy)`.
+
+## Resource sizing
+
+| Service | CPU | Memory | Notes |
+|---|---|---|---|
+| API | 0.5–2 cores | 512 MB–2 GB | Scales horizontally |
+| Worker | 0.5–2 cores | 512 MB–2 GB | One worker handles ~4 concurrent runs |
+| Postgres | 1–4 cores | 1–8 GB | Sized to your data + vector index |
+| Redis | 0.25–1 core | 256 MB–2 GB | Mostly queue + cache |
+
+For high-traffic deployments, run multiple API replicas behind a load balancer and multiple workers; both are stateless.
+
+## Where to run it
+
+| Platform | Notes |
+|---|---|
+| **Fly.io** | One `fly.toml`, deploy in ~2 minutes |
+| **Railway** | Click-to-deploy from the image |
+| **Render** | Same |
+| **Vercel** | The API is a long-lived server — Vercel Functions don't fit. Use Vercel for the [docs](/docs/deployment/self-hosted), the engine on Fly/Railway. |
+| **AWS ECS / Fargate** | Standard ECS task definition |
+| **GCP Cloud Run** | Works, but Cloud Run's request timeout limits long agentic runs — use the queue path |
+| **Kubernetes** | Helm chart is roadmap; for now, a Deployment + Service with the published image |
+| **Self-hosted VPS / VPC** | Plain Docker Compose works fine |
+
+For the full self-hosted story with TLS, observability, and scaling tips, see [Self-hosted](/docs/deployment/self-hosted).

@@ -1,0 +1,134 @@
+---
+title: Context Resolver
+description: Parallel-fetch context from many sources, sort by priority, trim to a token budget, hand it to the model.
+---
+
+The Context Resolver is the layer that decides **what the model gets to see** before each turn. It's the difference between an LLM that hallucinates and one that answers from your customer's real data.
+
+## Mental model
+
+```
+Request ──► [user_profile_source]──┐
+            [vector_search_source]─┤
+            [recent_messages_src]──┼──► merge ──► sort by priority ──► trim to budget ──► prompt
+            [mcp_tools_resources]──┤
+            [your_custom_source]───┘
+              (all run in parallel, with timeouts)
+```
+
+Every source has the same shape:
+
+```ts
+interface ContextSource {
+  name: string;
+  priority: number;  // higher survives the budget
+  fetch(req: ContextRequest): Promise<ContextItem[]>;
+}
+```
+
+## What's bundled
+
+Today's resolver ships with a single example source (`skill_guardrails`). The **roadmap** sources are:
+
+| Source | What it returns |
+|---|---|
+| `user_profile` | Tenant-scoped user attributes from your customer's DB |
+| `vector_search` | Top-k document chunks from `document_chunks` (pgvector HNSW) |
+| `recent_messages` | Compacted memory + last N turns from `messages` |
+| `mcp_resources` | Resources exposed by registered MCP servers |
+| `realtime_apis` | Live values pulled via tool-side connectors |
+
+You can add your own — see [Guides → Adding a context source](/docs/guides/adding-a-skill).
+
+## Parallel fetch with fault tolerance
+
+All sources run concurrently via `Promise.allSettled`. If a source throws, the resolver logs and continues — a flaky vector store or a slow API can't take down the response:
+
+```ts
+const settled = await Promise.allSettled(
+  this.sources.map((s) => s.fetch(req)),
+);
+const items = settled.flatMap((r) =>
+  r.status === "fulfilled" ? r.value : [],
+);
+```
+
+Add timeouts at the source level (via `ctx.signal`) so a stuck source doesn't pin the whole turn.
+
+## Priority + budget trimming
+
+After collection, items are sorted by `priority` (descending) and packed into the token budget:
+
+```ts
+let used = 0;
+const kept: ContextItem[] = [];
+for (const item of items) {
+  if (used + item.tokenEstimate > budget) continue;
+  used += item.tokenEstimate;
+  kept.push(item);
+}
+```
+
+Highest priority survives. Drop low-priority items first. Document the priority of each source explicitly so the system stays predictable as you add sources.
+
+| Priority | Use for |
+|---|---|
+| 100+ | Hard constraints (skill guardrails, policy rules) |
+| 50–99 | User-specific facts (profile, recent activity) |
+| 10–49 | Retrieved knowledge (RAG hits) |
+| 0–9 | Nice-to-have ambient signals |
+
+## How the budget is decided
+
+The agent loop calls `allocateBudget(contextWindow)` based on the chosen model:
+
+```ts
+{
+  systemPrompt: 10%   // skill prompts + base instructions
+  context:      40%   // resolver output goes here
+  history:      50%   // prior turns + compacted memory
+  responseHeadroom: max(2k, 10%) // room for the model to write
+}
+```
+
+For a 200K-token Claude Sonnet, that's `~80K` tokens for context. For an 8K local Llama, it's `~2K`. The resolver respects whatever fits.
+
+## What ends up in the prompt
+
+Items are rendered into the system prompt under a `# Context` heading, each in a typed block:
+
+```
+# Context
+
+<context source="user_profile">
+{ "user_id": "u_123", "tier": "premium", "joined_at": "2025-04-01" }
+</context>
+
+<context source="vector_search">
+[Document: Refund policy] Customers within 30 days of purchase...
+</context>
+```
+
+This format is intentionally explicit so the model can cite the source if asked.
+
+## Latency hygiene
+
+| Trick | What it buys |
+|---|---|
+| Parallel fetch (default) | `max(latency)` instead of `sum(latency)` |
+| Per-source timeouts | One slow source can't pin the response |
+| Pre-warm on session open | Fetch profile & recent messages while the user is typing |
+| Lazy retrieval via tools | Don't pre-load — let the model ask via a `search_*` tool |
+
+The lazy retrieval pattern is especially powerful: it pushes context size down 5–10x because the model only fetches what it needs.
+
+## Observability
+
+Every source's success/failure, item count, and latency are logged with `requestId` + `tenantId`:
+
+```
+{"level":30,"source":"vector_search","items":7,"ms":86,"msg":"context_source_ok"}
+{"level":40,"source":"realtime_balances","err":{"message":"timeout"},"msg":"context_source_failed"}
+```
+
+Use these to spot regressions: a source that quietly stops returning hits will tank quality without throwing.

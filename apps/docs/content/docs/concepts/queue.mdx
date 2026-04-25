@@ -1,0 +1,130 @@
+---
+title: Queue (BullMQ)
+description: Durable runs, embedding jobs, and scheduled work — on Redis. Workers run as a separate process so HTTP stays snappy.
+---
+
+Anything that takes longer than a few seconds, or that needs to survive a crash, runs on the queue. Synchronous chat completions stay in the HTTP request; everything else moves here.
+
+## Why a queue
+
+| Problem | Without a queue | With BullMQ |
+|---|---|---|
+| Agent run takes 2 minutes | HTTP times out | Job persists, client polls / streams |
+| Embedding 500 documents | Blocks request | Background job, retries on failure |
+| Process crashes mid-run | Lost work | Job resumes on next worker boot |
+| Nightly cleanup | Cron + custom code | Repeatable job with `repeat: { pattern }` |
+
+## What's wired
+
+[`@relay-e/queue`](https://github.com/belulok/relay-e/tree/master/packages/queue) ships three queues, all backed by the existing Redis from `docker-compose.yml`:
+
+| Queue | Job payload | Purpose |
+|---|---|---|
+| `relay-e.agent-runs` | `{ runId, tenantId, prompt, skills, ... }` | Long-running agent executions |
+| `relay-e.embeddings` | `{ tenantId, documentId, chunks, model }` | Background embedding generation |
+| `relay-e.scheduled` | (cron jobs) | Future: nightly compaction, eval runs, billing rollups |
+
+## Running the worker
+
+In a second terminal:
+
+```bash
+npm run worker
+```
+
+You should see:
+
+```
+{"level":30,"msg":"worker_started — Ctrl+C to stop"}
+{"level":30,"name":"relay-e.agent-runs","msg":"worker_ready"}
+{"level":30,"name":"relay-e.embeddings","msg":"worker_ready"}
+```
+
+The worker shares the engine codebase but runs as its own process. The same Docker image runs both — override `CMD` to switch:
+
+```bash
+docker run ghcr.io/belulok/relay-e:latest                # API
+docker run ghcr.io/belulok/relay-e:latest npm run worker # worker
+```
+
+## Job lifecycle
+
+```
+client                           api server                queue            worker
+──────────────────────────────────────────────────────────────────────────────────
+POST /v1/runs ──►
+                ──► validate, create row in `runs` table
+                    add job to relay-e.agent-runs ───────────────►
+                ◄── { run_id: "run_..." }
+GET /v1/runs/:id/events (SSE) ──► subscribe via QueueEvents
+                                                          ◄────── claim job
+                                                                        │
+                                                                        │ run agent loop
+                                                                        │ emit events ─►
+                                                          ◄────── complete job
+                ◄── stream "done" event
+```
+
+Status is reflected in `runs.status`: `queued` → `running` → `awaiting_approval` (HITL) → `done` / `failed`.
+
+## Retries and backoff
+
+Default job options for every queue:
+
+```ts
+{
+  attempts: 3,
+  backoff: { type: "exponential", delay: 5_000 },
+  removeOnComplete: { age: 24 * 60 * 60, count: 1_000 },
+  removeOnFail:    { age: 7 * 24 * 60 * 60 },
+}
+```
+
+A failing job retries 3 times with 5s, 10s, 20s backoff. Successful jobs stick around 24h (or 1k most-recent) for inspection; failed jobs stick around a week for debugging.
+
+## HITL — human-in-the-loop approval
+
+When the agent calls a tool flagged `requiresApproval`, the queued path:
+
+1. Pauses the run, writes `status: awaiting_approval` and the proposed input to `runs.steps[]`.
+2. Emits a `tool_awaiting_approval` event.
+3. Your app shows the user a confirmation UI.
+4. User clicks Approve → `POST /v1/runs/:id/approve` → the worker resumes the run.
+5. User clicks Reject → `POST /v1/runs/:id/cancel` → run terminates with `status: cancelled`.
+
+This is the production-safe pattern for destructive tool calls (transfers, deletions, sends). The endpoints are roadmap; the queue scaffolding is in place.
+
+## Scheduled / repeating jobs
+
+For cron-like work (nightly memory compaction, weekly eval runs, hourly billing rollups), use BullMQ's repeat option:
+
+```ts
+queue.add(
+  "compact-memory",
+  { tenantId },
+  { repeat: { pattern: "0 4 * * *" } }, // daily at 04:00 UTC
+);
+```
+
+The roadmap is to expose a `/v1/schedules` endpoint so customers can configure their own.
+
+## Observability
+
+The worker logs structured events on every job transition:
+
+```
+{"name":"relay-e.agent-runs","jobId":"...","runId":"...","msg":"agent_run_received"}
+{"name":"relay-e.agent-runs","jobId":"...","msg":"worker_job_failed","err":...}
+```
+
+For production: a Bull Board UI ([`bull-board`](https://github.com/felixmosh/bull-board)) gives you a real-time view of queues, jobs in flight, and failures. Roadmap.
+
+## Why BullMQ over Inngest
+
+Both are solid. We picked BullMQ because:
+
+- **Redis is already in the stack** — no new dependency.
+- **Self-hosted by default** — no vendor lock-in for the queue.
+- **Familiar API** — most TS engineers have seen `Queue`/`Worker` patterns before.
+
+Inngest is a great alternative if you want durable workflows and don't mind the SaaS dependency. If we ever need cross-process step durability with sleeps and waits, that's the trigger to revisit.

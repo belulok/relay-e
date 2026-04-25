@@ -1,0 +1,38 @@
+---
+title: Welcome
+description: A context-aware AI orchestration engine that sits between your app and the LLM.
+---
+
+Relay-E is the **layer between an LLM and your customers' data**. It pulls relevant context before each turn, routes between "answer directly" and "run a multi-step agent," and keeps the call graph cheap, observable, and durable.
+
+## Start here
+
+<Cards>
+  <Card title="Introduction" href="/docs/get-started/introduction" />
+  <Card title="Installation" href="/docs/get-started/installation" />
+  <Card title="Quickstart" href="/docs/get-started/quickstart" />
+  <Card title="Architecture" href="/docs/get-started/architecture" />
+</Cards>
+
+## Pick the path that matches your goal
+
+<Cards>
+  <Card title="Add an AI feature to my app" href="/docs/integration/overview" description="Pull the Docker image, point at your data, call the HTTP API." />
+  <Card title="Understand how it works" href="/docs/concepts/agent-loop" description="The agent loop, skills, tools, and the context resolver." />
+  <Card title="Self-host in production" href="/docs/deployment/docker" description="Docker, Postgres, Redis, observability, scaling." />
+  <Card title="Customize / contribute" href="/docs/guides/adding-a-skill" description="Add skills and tools for your domain." />
+</Cards>
+
+## What's in the box
+
+| Layer | What it does |
+|---|---|
+| **Provider abstraction** | Anthropic / OpenAI / OpenRouter / Ollama via the Vercel AI SDK |
+| **Skills + Tools** | Composable units of behaviour with Zod-validated input |
+| **Context Resolver** | Parallel fetch from multiple sources, trimmed to a token budget |
+| **Agent loop** | Tool-calling cycle with usage accounting and a typed event stream |
+| **OpenAPI 3.1** | Auto-generated from Zod — Postman imports in one click |
+| **Multi-tenant** | `tenant_id` flows through every layer; Postgres schema is RLS-ready |
+| **Durable runs** | BullMQ + Redis for queued / long-running work and HITL approvals |
+
+Built in TypeScript, runs on Node 22, MIT licensed.

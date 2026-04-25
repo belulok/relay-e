@@ -1,0 +1,178 @@
+---
+title: Adding a skill
+description: A worked example — go from "I want my AI to do X" to a working skill in under 10 minutes.
+---
+
+We'll build a `support-agent` skill that can look up an order, search the knowledge base, and escalate to a human. End-to-end.
+
+## 1. Sketch the skill
+
+Before coding: what does the user say, and what does the model need to do?
+
+| User says | Model needs to |
+|---|---|
+| "Where's my order?" | Look up the order by id or recent |
+| "How do I return X?" | Search the knowledge base for the return policy |
+| "I want to talk to a person" | Escalate to a human (open a ticket, paged Slack) |
+
+Three tools, one skill.
+
+## 2. Define the tools
+
+Open [`apps/api/src/bootstrap/registries.ts`](https://github.com/belulok/relay-e/blob/master/apps/api/src/bootstrap/registries.ts):
+
+```ts
+tools.registerMany([
+  defineTool({
+    name: "lookup_order",
+    description:
+      "Look up an order by id or by 'most recent' for the current user. " +
+      "Returns status, total, items, tracking link.",
+    inputSchema: z.object({
+      order_id: z.string().optional(),
+      latest: z.boolean().default(false),
+    }),
+    execute: async ({ order_id, latest }, ctx) => {
+      // In real life: query your DB scoped to ctx.tenantId / ctx.userId
+      return {
+        order_id: order_id ?? "ord_42",
+        status: "shipped",
+        total_usd: 89.50,
+        tracking_url: "https://...",
+      };
+    },
+  }),
+
+  defineTool({
+    name: "search_knowledge_base",
+    description:
+      "Semantic search over help articles. Use for policy / how-to questions. " +
+      "Returns up to 5 articles ranked by relevance.",
+    inputSchema: z.object({
+      query: z.string().min(2),
+      category: z.enum(["returns", "shipping", "billing", "account"]).optional(),
+    }),
+    execute: async ({ query, category }, ctx) => {
+      // In real life: pgvector hybrid search scoped to ctx.tenantId
+      return {
+        articles: [
+          { id: "kb_1", title: "Returns policy", excerpt: "Within 30 days..." },
+        ],
+      };
+    },
+  }),
+
+  defineTool({
+    name: "escalate_to_human",
+    description:
+      "Open a support ticket and notify the on-call agent. Use when the " +
+      "user is frustrated or the issue exceeds your tools.",
+    requiresApproval: true,                   // <-- HITL gate
+    inputSchema: z.object({
+      summary: z.string().min(10),
+      severity: z.enum(["low", "med", "high"]).default("med"),
+    }),
+    execute: async ({ summary, severity }, ctx) => {
+      return {
+        ticket_id: `tkt_${crypto.randomUUID().slice(0, 8)}`,
+        status: "open",
+        severity,
+      };
+    },
+  }),
+]);
+```
+
+## 3. Define the skill
+
+```ts
+skills.register(
+  defineSkill({
+    name: "support-agent",
+    description: "First-line customer support for an e-commerce store.",
+    systemPrompt:
+      `You are a customer support agent. Be empathetic, factual, and concise.
+       Use lookup_order for shipping / order questions.
+       Use search_knowledge_base for policy / how-to.
+       Use escalate_to_human only when the user is frustrated, asks for a human,
+       or you can't resolve the issue.
+       Never invent order details, prices, or policies — always call a tool.`,
+    toolNames: ["lookup_order", "search_knowledge_base", "escalate_to_human"],
+    preferredTier: "balanced",
+    examples: [
+      {
+        input: "Where's my order?",
+        output: "Calling lookup_order with latest=true.",
+      },
+    ],
+  }),
+);
+```
+
+## 4. Test it
+
+```bash
+# Restart dev server to pick up the new registrations
+npm run dev
+```
+
+Confirm it's discoverable:
+
+```bash
+curl http://localhost:3001/v1/skills -H "Authorization: Bearer $DEV_API_KEY" | jq
+```
+
+Send a real message:
+
+```bash
+curl -X POST http://localhost:3001/v1/sessions/test/messages \
+  -H "Authorization: Bearer $DEV_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Where is my latest order?","skills":["support-agent"]}'
+```
+
+You should see the model call `lookup_order` and turn its output into a helpful reply.
+
+## 5. Add an eval
+
+Tests for skills work just like any unit test, with `MockLanguageModelV1` from `ai/test`:
+
+```ts title="apps/api/src/skills/support.test.ts"
+import { describe, it, expect } from "vitest";
+import { MockLanguageModelV1 } from "ai/test";
+// ... import runAgent and a fixtures registry
+
+it("calls lookup_order when asked about shipping", async () => {
+  const model = new MockLanguageModelV1({
+    doGenerate: async () => ({
+      // ... mock the tool call response
+    }),
+  });
+  const result = await runAgent(/* ... */);
+  expect(result.toolCalls.map(t => t.name)).toContain("lookup_order");
+});
+```
+
+For real quality eval, run a fixed set of representative prompts and score with LLM-as-judge. The eval harness is roadmap; for now, a Vitest suite of "did the model call the right tool?" assertions catches 80% of regressions.
+
+## 6. Iterate
+
+When something doesn't work, check in this order:
+
+1. **Tool descriptions** — is the model picking the wrong one or none? Sharpen the description.
+2. **System prompt** — is it inventing facts? Add explicit "always call X for Y".
+3. **Tool input schema** — getting validation errors? Make the schema more permissive or add `.describe()` hints.
+4. **Examples** — add a few-shot example for the failure case.
+
+You almost never want to bypass the model with hand-coded routing logic. The model is the routing logic.
+
+## What you didn't have to do
+
+- Write a state machine
+- Maintain a function-calling spec by hand
+- Manage the LLM call/response cycle
+- Validate input or handle malformed tool calls
+- Track token usage or cost
+- Stream events to the frontend
+
+Relay-E does all of that. Your job is the skill prompt and the tools.

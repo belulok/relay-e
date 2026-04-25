@@ -10,3 +10,8 @@ dist
 .ollama
 coverage
 docs/openapi.json
+
+# Next.js / Fumadocs build outputs
+.next
+.source
+next-env.d.ts

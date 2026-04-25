@@ -1,0 +1,195 @@
+---
+title: TypeScript / Next.js
+description: A typed client from OpenAPI, plus a complete Next.js example with SSE streaming.
+---
+
+The simplest path for any TS app: generate a typed client from the OpenAPI spec, proxy through your backend so the API key never reaches the browser, and consume it from React.
+
+## 1. Generate the client
+
+```bash
+npm i -D openapi-typescript-codegen
+npx openapi-typescript-codegen \
+  --input http://localhost:3001/openapi.json \
+  --output ./src/lib/relay-e \
+  --client fetch \
+  --useOptions
+```
+
+You'll get a folder of typed services and models. Add a small wrapper:
+
+```ts title="src/lib/relay-e/client.ts"
+import { RelayEAPI } from "./relay-e";
+
+export const relayE = new RelayEAPI({
+  BASE: process.env.RELAY_E_URL!,
+  TOKEN: process.env.RELAY_E_KEY!,
+});
+```
+
+## 2. Proxy through your backend
+
+Don't expose the engine's API key to the browser. Front Relay-E with a Next.js route handler that authenticates the user via your existing auth, then forwards the request server-side:
+
+```ts title="src/app/api/chat/route.ts"
+import { auth } from "@/lib/auth";
+
+export async function POST(req: Request) {
+  const session = await auth();
+  if (!session?.user) return new Response("unauthorized", { status: 401 });
+
+  const body = await req.json();
+
+  // Forward to Relay-E with the master key + user identity.
+  const upstream = await fetch(
+    `${process.env.RELAY_E_URL}/v1/sessions/${session.user.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${process.env.RELAY_E_KEY}`,
+        "content-type": "application/json",
+        // Pass-through headers so the engine knows which tenant/user this is.
+        "x-tenant-id": session.user.tenantId,
+        "x-user-id": session.user.id,
+      },
+      body: JSON.stringify(body),
+    },
+  );
+
+  // Stream the SSE response straight to the client unchanged.
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+    },
+  });
+}
+```
+
+This pattern keeps Relay-E hidden behind your auth and gives you a clean per-user attribution path.
+
+## 3. Sync usage from a Server Action
+
+```ts title="src/app/actions/ask.ts"
+"use server";
+import { auth } from "@/lib/auth";
+
+export async function ask(prompt: string) {
+  const session = await auth();
+  if (!session?.user) throw new Error("unauthorized");
+
+  const res = await fetch(`${process.env.RELAY_E_URL}/v1/sessions/${session.user.id}/messages`, {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${process.env.RELAY_E_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ prompt, skills: ["support-agent"] }),
+  });
+
+  if (!res.ok) throw new Error(`relay-e ${res.status}`);
+  return res.json() as Promise<{ content: { type: "text"; text: string }[] }>;
+}
+```
+
+## 4. Streaming — React component
+
+```tsx title="src/components/Chat.tsx"
+"use client";
+import { useState } from "react";
+
+interface AgentEvent {
+  type: string;
+  [k: string]: unknown;
+}
+
+export function Chat() {
+  const [events, setEvents] = useState<AgentEvent[]>([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function send(prompt: string) {
+    setEvents([]);
+    setText("");
+    setBusy(true);
+
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        skills: ["support-agent"],
+        stream: true,
+      }),
+    });
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        const event = JSON.parse(dataLine.slice(5).trim());
+        setEvents((prev) => [...prev, event]);
+        if (typeof event.text === "string") setText(event.text);
+      }
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="space-y-3">
+      <ToolTimeline events={events} busy={busy} />
+      {text && <p>{text}</p>}
+      <ChatInput onSubmit={send} disabled={busy} />
+    </div>
+  );
+}
+```
+
+## 5. Render the tool timeline
+
+```tsx
+function ToolTimeline({ events, busy }: { events: AgentEvent[]; busy: boolean }) {
+  return (
+    <ul className="text-sm space-y-1 text-muted-foreground">
+      {events.map((e, i) => {
+        if (e.type === "thinking") return <li key={i}>· {String(e.step)}…</li>;
+        if (e.type === "context_resolved")
+          return <li key={i}>· found context from {(e.sources as string[]).join(", ")}</li>;
+        if (e.type === "tool_call")
+          return <li key={i}>↳ Calling <code>{String(e.name)}</code></li>;
+        if (e.type === "tool_result")
+          return <li key={i}>{e.is_error ? "✗" : "✓"} {String(e.name)} done</li>;
+        if (e.type === "usage")
+          return (
+            <li key={i}>
+              · {(e.usage as { tokens_in: number }).tokens_in +
+                (e.usage as { tokens_out: number }).tokens_out} tokens (${(e.usage as { cost_usd: number }).cost_usd.toFixed(4)})
+            </li>
+          );
+        return null;
+      })}
+      {busy && <li>· thinking…</li>}
+    </ul>
+  );
+}
+```
+
+## 6. Production checklist
+
+- [ ] Engine API key in your secrets manager, not in your repo
+- [ ] All client-facing routes proxy through your backend (never expose `RELAY_E_KEY`)
+- [ ] User identity (`x-tenant-id`, `x-user-id`) forwarded on every call
+- [ ] Frontend handles `error` SSE events gracefully
+- [ ] Tool timeline collapses by default — show on expand
+- [ ] Usage / cost surface for billing if you charge per use

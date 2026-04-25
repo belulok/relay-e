@@ -23,6 +23,8 @@ relevant context before each turn and routing between "just respond" and
 (Postgres + pgvector + Redis + Ollama) and ships the same image to
 production.
 
+> **📖 Full documentation**: see [`apps/docs/`](./apps/docs) (Fumadocs site, deployable to Vercel). Run `npm run dev -w @relay-e/docs` for local dev at `http://localhost:3002`.
+
 ## Features
 
 - **Provider-agnostic LLM layer** — Anthropic / OpenAI / **OpenRouter** (single key for 100+ models) / Ollama (offline) via the Vercel AI SDK; tier-based router (`fast` / `balanced` / `premium`) picks the cheapest model that fits the task.

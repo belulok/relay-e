@@ -1,0 +1,183 @@
+---
+title: Self-hosted production
+description: TLS, secrets, scaling, backups, and what to put behind the engine in production.
+---
+
+This is the production checklist for running Relay-E yourself. It assumes you've already got the [Docker setup](/docs/deployment/docker) running.
+
+## TLS + a load balancer in front
+
+Don't expose the engine directly. Put any of these in front:
+
+| Option | When |
+|---|---|
+| **Caddy** | Smallest possible setup; auto TLS via Let's Encrypt |
+| **NGINX + Certbot** | Familiar, full-featured |
+| **Traefik** | Docker-native, auto-discovers services |
+| **Cloud LB** (ALB, GCP LB, Cloudflare) | Managed cloud setups |
+
+Minimal Caddy example:
+
+```text title="Caddyfile"
+relay-e.yourcompany.com {
+  reverse_proxy relay-e:3001 {
+    flush_interval -1   # critical for SSE streaming
+  }
+}
+```
+
+`flush_interval -1` is **non-negotiable** — without it your reverse proxy buffers the SSE stream and the user sees frozen "thinking…" until the run ends.
+
+For NGINX:
+
+```nginx
+location / {
+  proxy_pass http://relay-e:3001;
+  proxy_buffering off;             # don't buffer SSE
+  proxy_read_timeout 300s;         # long agent runs
+  proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+## Secrets
+
+Use a secret manager — not `.env` files in production:
+
+| Platform | Tool |
+|---|---|
+| AWS | Secrets Manager / Parameter Store |
+| GCP | Secret Manager |
+| Fly.io | `fly secrets set` |
+| Kubernetes | Kubernetes Secrets / External Secrets Operator |
+| Self-hosted | HashiCorp Vault / Doppler / Infisical |
+
+Required at minimum:
+
+- `DEV_API_KEY` (rename internally — it's your engine master key)
+- `DATABASE_URL`
+- `REDIS_URL`
+- One LLM provider key
+
+## Database
+
+For production Postgres, use a managed service unless you have a strong reason:
+
+| Provider | pgvector support | Why pick |
+|---|---|---|
+| **Neon** | Yes | Branching, serverless, generous free tier |
+| **Supabase** | Yes | Backups + dashboards bundled |
+| **AWS RDS** | Yes (16+) | Standard enterprise option |
+| **Crunchy Bridge** | Yes | Postgres specialists |
+| **Railway / Render** | Yes | Click-to-deploy alongside the engine |
+
+Make sure pgvector is enabled (`CREATE EXTENSION vector;`).
+
+### Backups
+
+Daily `pg_dump` to S3-compatible storage at minimum:
+
+```bash
+pg_dump --format=custom $DATABASE_URL | aws s3 cp - s3://your-backups/relay-e/$(date +%F).backup
+```
+
+For production, prefer continuous WAL archiving (`wal-g`, `pgBackRest`, or your managed provider's PITR).
+
+### Connection pooling
+
+At scale, put PgBouncer in transaction mode in front of Postgres. The engine uses postgres-js with `prepare: false` by default, which is PgBouncer-compatible.
+
+## Redis
+
+For production Redis:
+
+- **Upstash** — serverless, pay-per-request, simple
+- **Redis Cloud** — managed, more features
+- **AWS ElastiCache** — standard
+- **Self-hosted** — fine for moderate scale
+
+Persistence (`appendonly yes`) is enabled in our Compose by default. If you don't need durable queues (e.g. you persist run state in Postgres), you can disable AOF for performance.
+
+## Scaling
+
+The API and worker are stateless — scale by adding replicas:
+
+```yaml
+# Multiple API replicas
+relay-e:
+  image: ghcr.io/belulok/relay-e:v0.0.1
+  deploy: { replicas: 3 }
+
+# Multiple workers
+relay-e-worker:
+  image: ghcr.io/belulok/relay-e:v0.0.1
+  command: ["npm", "run", "worker"]
+  deploy: { replicas: 2 }
+```
+
+BullMQ + Redis handle worker coordination — jobs are claimed atomically, no duplicate work.
+
+| Bottleneck | Symptom | Fix |
+|---|---|---|
+| LLM provider rate limits | Lots of 429 / 502 from upstream | Add a second provider key; throttle at the gateway |
+| Postgres connections | `EAGAIN` / connection refused | Add PgBouncer; reduce `max` per replica |
+| Redis memory | Queue grows; jobs stall | Increase Redis memory; tune `removeOnComplete` aggressively |
+| CPU on the API | High latency at p95 | More replicas (cheap; stateless) |
+
+## Observability
+
+| Layer | Recommended tool |
+|---|---|
+| LLM tracing (prompts, tool calls, costs) | [Langfuse](https://langfuse.com) — open source, self-hostable |
+| Application logs | The engine emits structured Pino logs — ship to Datadog / Loki / CloudWatch |
+| Metrics | OTel exporter (roadmap) → Prometheus / Datadog |
+| Errors | Sentry — wire via the engine's error handler |
+| Uptime | Any HTTP probe against `/health` |
+
+The engine already structures every log with `requestId`, `tenantId`, `sessionId`, `runId`. Search by these and you can reconstruct any request end-to-end.
+
+See [Observability](/docs/deployment/observability).
+
+## Cost guardrails
+
+Without limits, a single misbehaving customer (or an attacker) can run up large LLM bills. Today the engine doesn't enforce per-tenant quotas (roadmap), so:
+
+- Front the API with a rate limiter (per API key, per IP).
+- Cap `maxSteps` in the request body — runaway loops die quickly.
+- Watch `usage_events` aggregates; alert on weird spikes.
+
+## Disaster recovery
+
+| Failure | Recovery |
+|---|---|
+| Engine container crashes | Container restarts (Docker `restart: unless-stopped`); in-flight sync requests fail; queued runs resume |
+| Worker crashes | Same — queued jobs are reclaimed |
+| Postgres failover | Engine reconnects on next request; in-flight transactions abort |
+| Redis flush | Queued jobs lost — but their parent `runs` rows persist with `status: queued`. Re-enqueue via a recovery script (roadmap; for now, manual) |
+| Region outage | Run multi-region Postgres + Redis; engine itself is stateless |
+
+## Compliance / data residency
+
+For HIPAA, GDPR, SOC 2:
+
+- **Self-host in your VPC.** No data leaves your network.
+- **Pick a Postgres region that matches your residency requirement.**
+- **Use an LLM provider with the right BAA / DPA** (Anthropic and OpenAI both offer enterprise terms).
+- **Audit logs are first-class** — `usage_events` and `runs.steps[]` give you a full record of every model call and tool execution.
+- **PII redaction at the logger** — Pino is configured with `redact:` for common credential paths; extend with your own fields.
+
+## Upgrading
+
+Pinned versions roll forward deliberately:
+
+```bash
+# Pull the new image
+docker pull ghcr.io/belulok/relay-e:v0.0.2
+
+# Update your compose file
+sed -i 's|relay-e:v0.0.1|relay-e:v0.0.2|' docker-compose.yml
+
+# Apply (zero-downtime if you have multiple replicas)
+docker compose up -d
+```
+
+Always read the [CHANGELOG](https://github.com/belulok/relay-e/blob/master/CHANGELOG.md) for breaking changes — pre-1.0, breaking changes can land in minor versions and are flagged **BREAKING**.

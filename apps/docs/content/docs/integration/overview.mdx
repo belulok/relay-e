@@ -1,0 +1,96 @@
+---
+title: Integration overview
+description: Three concrete paths for using Relay-E in your product today.
+---
+
+If you want to add an AI feature to your product, here are the three ways people actually do it. Pick by the column you fit into.
+
+## Path 1 — Pull the Docker image
+
+Best for: SaaS apps, internal tools, anything where you want to "just have an AI assistant" without maintaining the engine yourself.
+
+```yaml title="your-app/docker-compose.yml"
+services:
+  relay-e:
+    image: ghcr.io/belulok/relay-e:latest
+    ports: ["3001:3001"]
+    environment:
+      DEV_API_KEY: ${RELAY_E_KEY}
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/relay_e
+      REDIS_URL: redis://redis:6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    depends_on: [postgres, redis]
+
+  relay-e-worker:
+    image: ghcr.io/belulok/relay-e:latest
+    command: ["npm", "run", "worker"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/relay_e
+    depends_on: [redis]
+```
+
+Then call the HTTP API. Pros: no fork, ~5-min setup. Cons: only the bundled `financial-advisor` skill until skill-as-config lands; for real domain logic, see Path 2.
+
+## Path 2 — Fork and customize
+
+Best for: production deployments with real domain logic — your own tools, skills, and connectors.
+
+```bash
+git clone https://github.com/belulok/relay-e.git my-relay-e
+cd my-relay-e
+# Edit apps/api/src/bootstrap/registries.ts — add your skills and tools
+# Connect to your data (Guides → Connecting your data)
+git push origin master --tags
+# Your fork's release.yml builds ghcr.io/yourorg/my-relay-e:vX.Y.Z
+```
+
+You inherit the agent loop, OpenAPI surface, queue, multi-tenancy, and observability — and add your domain.
+
+## Path 3 — Just the HTTP API (any language)
+
+Best for: integrating from a language other than TypeScript. Works the same as Stripe / OpenAI APIs.
+
+```bash
+# Generate a typed client from the OpenAPI spec
+npx openapi-typescript-codegen --input http://localhost:3001/openapi.json --output ./client       # TS
+openapi-python-client generate --url http://localhost:3001/openapi.json                          # Python
+oapi-codegen -package relayE http://localhost:3001/openapi.json > relay_e.go                     # Go
+```
+
+Every language has an OpenAPI generator. The spec is auto-updated as you add routes.
+
+## Decision tree
+
+```
+Are you in a hurry / want a demo?
+   ├─ Yes → Path 1 (Docker, 5 min)
+   └─ No
+      Do you need your own skills/tools/connectors?
+         ├─ No  → Path 1
+         └─ Yes
+            Are you on TypeScript?
+               ├─ Yes → Path 2 (fork)
+               └─ No  → Path 2 (fork) for the engine + Path 3 (codegen) for your client
+```
+
+## What's missing today
+
+| Need | Status | Workaround |
+|---|---|---|
+| First-class TS/Python SDK | Not yet — `packages/sdk-ts` is roadmap | OpenAPI codegen (above) |
+| Skill-as-config (no fork required) | Roadmap | Fork + edit `bootstrap/registries.ts` |
+| Production auth (per-tenant keys, OAuth) | Dev-only `DEV_API_KEY` | Front it with your auth proxy |
+| Hosted version (`relay-e.com`) | Not yet | Self-host via Docker on Fly / Railway / your VPC |
+| Real built-in connectors (Stripe, Plaid) | Stub MCP only | Roll your own MCP server or REST adapter |
+
+These are roadmap items. Once the SDK + skill-as-config + hosted tier land, the integration story tightens to "`npm install @relay-e/sdk` + paste your API key."
+
+## What's next
+
+<Cards>
+  <Card title="From TypeScript / Next.js" href="/docs/integration/typescript" />
+  <Card title="From Python" href="/docs/integration/python" />
+  <Card title="From any language (OpenAPI)" href="/docs/integration/any-language" />
+  <Card title="Postman / Bruno / Insomnia" href="/docs/integration/postman" />
+</Cards>

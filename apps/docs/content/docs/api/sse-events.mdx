@@ -1,0 +1,190 @@
+---
+title: SSE Events
+description: Every event the streaming endpoint emits, when it fires, and what's in the payload.
+---
+
+When you call the messages endpoint with `stream: true`, the response is a `text/event-stream` of typed events.
+
+## Frame format
+
+```
+event: <event-name>
+data: <JSON payload>
+<blank line>
+```
+
+`<JSON payload>` is always a single object. The shape depends on `<event-name>`.
+
+## All events
+
+### `thinking`
+
+A phase change inside the engine. Use it to drive a "thinking…" indicator.
+
+```json
+{ "type": "thinking", "step": "resolving_context" }
+{ "type": "thinking", "step": "calling_model" }
+```
+
+Possible `step` values: `resolving_context`, `calling_model`. (More may be added; treat unknown values as "thinking".)
+
+### `context_resolved`
+
+All context sources have returned and the bundle has been trimmed to the budget.
+
+```json
+{
+  "type": "context_resolved",
+  "sources": ["skill_guardrails", "user_profile", "vector_search"],
+  "tokenEstimate": 4321
+}
+```
+
+### `tool_call`
+
+The model decided to call a tool. Fired before `execute` runs.
+
+```json
+{
+  "type": "tool_call",
+  "tool_call_id": "tc_aBc123",
+  "name": "analyze_spending",
+  "input": { "days": 30 }
+}
+```
+
+### `tool_awaiting_approval`
+
+A tool flagged `requiresApproval` was selected. The run pauses (in queued mode) for an explicit approve/reject.
+
+```json
+{
+  "type": "tool_awaiting_approval",
+  "tool_call_id": "tc_aBc123",
+  "name": "transfer_funds",
+  "input": { "from_account": "...", "to_account": "...", "amount_usd": 100 }
+}
+```
+
+### `tool_result`
+
+The tool returned (or threw). `is_error: true` means `execute` threw — the model gets the error message and may retry.
+
+```json
+{
+  "type": "tool_result",
+  "tool_call_id": "tc_aBc123",
+  "name": "analyze_spending",
+  "output": { "total_usd": 1842.4, "categories": [...] }
+}
+```
+
+```json
+{
+  "type": "tool_result",
+  "tool_call_id": "tc_aBc123",
+  "name": "analyze_spending",
+  "output": { "error": "timeout" },
+  "is_error": true
+}
+```
+
+### `text_delta` (roadmap)
+
+Token-level streaming text. Will fire when token-streaming is wired (currently the loop awaits the full response).
+
+```json
+{ "type": "text_delta", "delta": "Last month " }
+{ "type": "text_delta", "delta": "you spent " }
+```
+
+### `text`
+
+The full final text from the model. Fired once at the end.
+
+```json
+{ "text": "Last month you spent $1,842.40 with the largest categories being..." }
+```
+
+### `usage`
+
+Token + USD accounting for the model call that just completed. Fired before `done`.
+
+```json
+{
+  "type": "usage",
+  "usage": {
+    "tokens_in": 2103,
+    "tokens_out": 312,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.005346
+  },
+  "model": "claude-sonnet-4-6"
+}
+```
+
+### `done`
+
+The loop is finished. Last event in the stream.
+
+```json
+{
+  "type": "done",
+  "usage": { /* same as usage event */ },
+  "finish_reason": "stop"
+}
+```
+
+`finish_reason` values: `stop` (normal), `tool_calls` (interrupted), `length` (budget hit), `content_filter` (provider safety).
+
+### `error`
+
+Anything threw. Fired instead of `done`.
+
+```json
+{ "message": "agent_failed", "code": "internal_error" }
+```
+
+## Order of events
+
+A typical successful run with one tool call emits:
+
+```
+thinking (resolving_context)
+context_resolved
+thinking (calling_model)
+tool_call
+tool_result
+usage
+text
+done
+```
+
+A run with no tool calls:
+
+```
+thinking (resolving_context)
+context_resolved
+thinking (calling_model)
+usage
+text
+done
+```
+
+A run where every tool was deferred for approval:
+
+```
+thinking (resolving_context)
+context_resolved
+thinking (calling_model)
+tool_call
+tool_awaiting_approval
+[paused — sync mode emits but doesn't block; queued mode actually pauses]
+```
+
+## Frontend handling
+
+See [Guides → Streaming](/docs/guides/streaming) for a complete React example.
+
+The pattern: switch on `event.type`, render typed UI for each. Don't try to parse text incrementally from the SSE stream — wait for the `text` event.

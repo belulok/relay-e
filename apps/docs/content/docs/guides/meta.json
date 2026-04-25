@@ -1,0 +1,11 @@
+{
+  "title": "Guides",
+  "icon": "BookOpen",
+  "pages": [
+    "adding-a-skill",
+    "adding-a-tool",
+    "connecting-data",
+    "streaming",
+    "testing"
+  ]
+}

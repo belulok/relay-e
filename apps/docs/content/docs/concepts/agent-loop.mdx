@@ -1,0 +1,120 @@
+---
+title: Agent Loop
+description: The iterative LLM ↔ tool cycle that turns a user message into a response. ~200 lines of code, no magic.
+---
+
+The agent loop is the heart of Relay-E. Given a request, it decides on a model, builds the prompt, calls the LLM, executes whatever tools the model picks, feeds the results back, and loops until the model is done.
+
+## The shape, in pseudocode
+
+```ts
+async function runAgent(input, deps) {
+  // 1. Pick a model based on the skill's preferred tier
+  const tier = input.skills.find(s => s.preferredTier)?.preferredTier ?? "balanced";
+  const modelKey = input.modelKey ?? deps.providers.routeBy(tier);
+  const { model, descriptor } = deps.providers.chat(modelKey);
+
+  // 2. Compute the token budget for this model's context window
+  const budget = allocateBudget(descriptor.contextWindow);
+
+  // 3. Resolve context (parallel fetch, trimmed)
+  emit({ type: "thinking", step: "resolving_context" });
+  const context = await deps.context.resolve(req, budget.context);
+  emit({ type: "context_resolved", sources: ..., tokenEstimate: ... });
+
+  // 4. Build the system prompt
+  const system = buildSystemPrompt({ skills: input.skills, context });
+
+  // 5. Pick the tools the skills declare
+  const tools = deps.tools.pick(input.skills.flatMap(s => s.toolNames));
+
+  // 6. Run the loop
+  emit({ type: "thinking", step: "calling_model" });
+  const result = await generateText({
+    model,
+    system,
+    messages: [...history, { role: "user", content: input.prompt }],
+    tools: convertToAiSdkTools(tools, emit),
+    maxSteps: input.maxSteps ?? 8,
+    abortSignal: deps.signal,
+  });
+
+  // 7. Account usage and emit done
+  const usage = priceUsage(pricingFor(modelKey), result.usage);
+  emit({ type: "usage", usage, model: modelKey });
+  emit({ type: "done", usage, finish_reason: result.finishReason });
+
+  return { text: result.text, usage, toolCalls, ... };
+}
+```
+
+The actual implementation lives in [`packages/engine/src/agent/loop.ts`](https://github.com/belulok/relay-e/blob/master/packages/engine/src/agent/loop.ts). It's ~200 lines.
+
+## Why "loop" — what the SDK is doing under the hood
+
+`generateText({ tools, maxSteps })` from the Vercel AI SDK handles the inner cycle:
+
+```
+You → SDK         SDK → LLM            LLM response          SDK → you
+─────────────────────────────────────────────────────────────────────
+prompt+tools  →   "What's my balance?"
+                                    ←  call get_balance(acct=42)
+                  execute it (your handler) → { balance: 4231.55 }
+                  prompt + first turn + tool result
+                                    ←  "Your balance is $4,231.55."
+                                       finish_reason: "stop"
+                                                              text + usage
+```
+
+`maxSteps` caps how many tool-call rounds the model gets. A skill that needs to chain `search_orders → get_order_details → analyze` needs at least 3 steps. The default is 8.
+
+## Event stream
+
+Every meaningful state change is emitted on the `emit` callback. In the HTTP layer, those events become SSE frames:
+
+| Event | When | Payload |
+|---|---|---|
+| `thinking` | Before context fetch and before model call | `{ step }` |
+| `context_resolved` | After all sources return | `{ sources[], tokenEstimate }` |
+| `tool_call` | When the model decides to call a tool | `{ tool_call_id, name, input }` |
+| `tool_awaiting_approval` | If the tool has `requiresApproval` | same as `tool_call` |
+| `tool_result` | After execute() returns (or throws) | `{ tool_call_id, name, output, is_error? }` |
+| `text_delta` | Incremental text from the model | `{ delta }` (when streaming text generation lands) |
+| `usage` | After the model call completes | `{ usage, model }` |
+| `done` | Loop is finished | `{ usage, finish_reason }` |
+| `error` | Anything threw | `{ message, code? }` |
+
+Your frontend renders these into a "thinking..." indicator, a tool call inspector, and the final answer.
+
+## Sync vs. queued runs
+
+Two modes:
+
+| Mode | When | How |
+|---|---|---|
+| **Sync** | Most chat — completes in under 30s | `POST /v1/sessions/:id/messages` returns when done |
+| **Queued** | Long agentic runs (search the web, summarise 100 docs) | `POST /v1/runs` returns a `run_id`, worker processes via BullMQ, client subscribes to events |
+
+The queued path is on the [@relay-e/queue](/docs/concepts/queue) layer. The sync path bypasses the queue and runs in the HTTP handler.
+
+## Cost accounting
+
+After every model call, the engine prices the usage and records it. Provider-reported counts (when available) are the source of truth; otherwise we fall back to a `chars/4` heuristic.
+
+```ts
+const usage = priceUsage(pricingFor(modelKey), {
+  input: result.usage?.promptTokens,
+  output: result.usage?.completionTokens,
+});
+// → { tokens_in, tokens_out, cost_usd, cache_read_tokens, cache_write_tokens }
+```
+
+The engine writes to `usage_events` (per-call) and aggregates into `sessions.token_count` (running session total). See [Concepts → Database](/docs/concepts/database).
+
+## What's not yet in the loop
+
+- **Streaming tokens** — currently the loop awaits the full response, then the API streams the result. True token-level streaming is a swap to `streamText()` and a roadmap item.
+- **Persistence** — sync runs don't currently write messages to Postgres. Queued runs will, when `/v1/runs` lands.
+- **Memory compaction** — long sessions exceed the context window. The compaction strategy (summarise old turns, embed-and-retrieve) is designed but not wired.
+
+These are the next iterations. The skeleton is intentionally lean so each addition is a small, reviewable change.

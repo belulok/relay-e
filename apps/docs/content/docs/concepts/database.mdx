@@ -1,0 +1,119 @@
+---
+title: Database
+description: Postgres + pgvector via Drizzle. 12 tables, multi-tenant via tenant_id, HNSW indexes for vector search.
+---
+
+Relay-E uses **Postgres 16 + pgvector** as the single source of truth. Drizzle is the ORM. Migrations are versioned and committed to the repo.
+
+## Why Postgres for everything
+
+One database, one mental model. pgvector handles millions of vectors fine, hybrid queries (filter by `tenant_id` AND vector similarity) are trivial, and you only have one set of operational concerns. Switch to a dedicated vector DB only after you've outgrown it — most teams never do.
+
+## Schema overview
+
+12 tables, all scoped by `tenant_id`:
+
+| Table | Purpose |
+|---|---|
+| `tenants` | Customers using your Relay-E instance |
+| `users` | End-users belonging to tenants |
+| `sessions` | Conversation containers |
+| `messages` | Per-turn message log (high-volume; partitioned by month in the roadmap) |
+| `runs` | Queued / long-running agent executions |
+| `skills` | Tenant-scoped skill definitions (when skill-as-config lands) |
+| `tools` | Tenant-scoped tool definitions |
+| `connectors` | Data source integrations (MCP, REST, OAuth) |
+| `documents` | Knowledge base entries |
+| `document_chunks` | Embedded chunks for RAG (HNSW index on `embedding`) |
+| `files` | Multimodal uploads (S3/Blob refs + parsed content) |
+| `usage_events` | Per-call token + cost ledger |
+
+Schema lives in [`packages/db/src/schema.ts`](https://github.com/belulok/relay-e/blob/master/packages/db/src/schema.ts).
+
+## Multi-tenancy
+
+Every row has `tenant_id`. Two layers of defense:
+
+1. **Application layer** — every query filters on `tenant_id`. Drizzle types make this hard to forget.
+2. **Postgres Row-Level Security** (roadmap) — `SET app.tenant_id = '...'` at the start of each transaction. RLS policies enforce isolation even if a query forgets the filter. Configured but not yet enabled by default.
+
+For high-compliance customers (finance, healthcare), schema-per-tenant is also possible by extending the connector layer. RLS is the simpler default.
+
+## Vector search
+
+`messages.embedding` and `document_chunks.embedding` are `vector(1536)` columns with HNSW indexes for cosine similarity:
+
+```sql
+CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON document_chunks (tenant_id);
+```
+
+Hybrid queries combine both:
+
+```ts
+db.select()
+  .from(documentChunks)
+  .where(eq(documentChunks.tenantId, tenantId))
+  .orderBy(sql`embedding <=> ${queryEmbedding}`)
+  .limit(20);
+```
+
+For better quality, **rerank** the top 20 with Cohere Rerank or an LLM judge to keep the top 5. See [Concepts → Context Resolver](/docs/concepts/context-resolver).
+
+## Migrations
+
+Drizzle Kit produces SQL files in `packages/db/drizzle/`. They're committed so:
+
+- New devs apply with `npm run db:migrate` against a fresh DB.
+- CI applies against a service container.
+- You can review schema changes in PR diffs.
+
+To make a schema change:
+
+```bash
+# 1. Edit packages/db/src/schema.ts
+# 2. Generate the migration
+npm run db:generate
+# 3. Apply locally
+npm run db:migrate
+# 4. Commit drizzle/0XXX_xxx.sql + drizzle/meta/
+```
+
+## Indexing strategy
+
+- **Composite `(tenant_id, created_at desc)`** on hot read tables (`messages`, `runs`, `usage_events`).
+- **HNSW on `embedding`** for fast vector search.
+- **GIN on JSONB** only when you actually query into the field (none yet — `metadata` is opaque).
+
+## Hot vs. cold data (roadmap)
+
+`messages` and `usage_events` will balloon. Plan:
+
+- **Day 90+**: partition by month, archive partitions older than 90 days to S3 + Parquet (still queryable via DuckDB / a separate analytics DB).
+- **Day 365+**: shard by `tenant_id` if a single DB can't hold all tenants. Most teams won't get here for years.
+
+## Test database
+
+A separate `relay_e_test` database is used for DB tests. CI provisions it via a Postgres service container; locally, create it once:
+
+```bash
+docker exec relay-e-postgres psql -U postgres -c "CREATE DATABASE relay_e_test;"
+DATABASE_URL_TEST=postgres://postgres:postgres@localhost:5432/relay_e_test npm run db:migrate
+RELAY_E_TEST_DB=1 npm test
+```
+
+See [Guides → Testing](/docs/reference/versioning) for the full pattern.
+
+## Backup & restore (production)
+
+Standard Postgres tooling:
+
+```bash
+# Backup
+pg_dump --format=custom $DATABASE_URL > relay-e.backup
+
+# Restore
+pg_restore --dbname=$DATABASE_URL relay-e.backup
+```
+
+For point-in-time recovery in production, use a managed Postgres (Neon, Supabase, RDS) with continuous WAL archival.

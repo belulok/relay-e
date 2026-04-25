@@ -1,0 +1,150 @@
+---
+title: Providers
+description: Anthropic, OpenAI, OpenRouter, Ollama — pick one or stack them. Model routing picks the cheapest model that fits.
+---
+
+Relay-E uses the Vercel AI SDK underneath, so adding a provider is wiring an adapter into the registry. Today four are configured.
+
+## What's wired
+
+| Provider | When to pick | Env var |
+|---|---|---|
+| **OpenRouter** | Single key, 100+ models. Recommended for most projects. | `OPENROUTER_API_KEY` |
+| **Anthropic** | Direct, lowest latency for Claude. Supports prompt caching. | `ANTHROPIC_API_KEY` |
+| **OpenAI** | GPT models, fallback / specific features. | `OPENAI_API_KEY` |
+| **Ollama** | Fully offline / on-prem. Pull models locally. | `OLLAMA_BASE_URL` |
+
+Set **at least one**. The engine throws a clear error at startup if none are configured.
+
+## OpenRouter — the recommended cloud path
+
+OpenRouter aggregates 100+ models behind a single OpenAI-compatible API. With one key, you can route between Claude, GPT, Llama, Mistral, and more — useful when you want flexibility without managing a key per provider.
+
+```bash title=".env"
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+OpenRouter model keys use the `openrouter:<provider>/<model>` convention:
+
+```ts
+modelKey: "openrouter:anthropic/claude-sonnet-4"
+modelKey: "openrouter:openai/gpt-4o"
+modelKey: "openrouter:meta-llama/llama-3.3-70b-instruct"
+```
+
+OpenRouter's pricing is per-model. The engine doesn't pre-bake every model's price — set yours in [`packages/providers/src/pricing.ts`](https://github.com/belulok/relay-e/blob/master/packages/providers/src/pricing.ts) for the ones you use.
+
+## Anthropic — for Claude direct
+
+```bash title=".env"
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Claude direct gets you:
+
+- Prompt caching (huge cost win on stable system prompts — see [Token Optimisation](/docs/concepts/agent-loop#cost-accounting))
+- Lower latency (no aggregator hop)
+- Specific features like extended thinking
+
+Defaults bundled:
+
+| Tier | Model |
+|---|---|
+| `fast` | `claude-haiku-4-5` |
+| `balanced` | `claude-sonnet-4-6` |
+| `premium` | `claude-opus-4-7` |
+
+## OpenAI — for GPT direct
+
+```bash title=".env"
+OPENAI_API_KEY=sk-...
+```
+
+| Tier | Model |
+|---|---|
+| `fast` | `gpt-4o-mini` |
+| `balanced` / `premium` | `gpt-4o` |
+
+OpenAI is also the embedding provider. `text-embedding-3-small` (1536 dims) is a sane default; switch to `voyage-3` for better retrieval quality (separate Voyage API key).
+
+## Ollama — fully offline
+
+For air-gapped dev or compliance-heavy environments:
+
+```bash
+docker compose --profile local-llm up -d
+docker exec relay-e-ollama ollama pull llama3.2
+docker exec relay-e-ollama ollama pull nomic-embed-text
+```
+
+```bash title=".env"
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Local models are slower and lower-quality than frontier ones, but useful for:
+
+- Local development without burning API credits
+- Air-gapped self-hosted deployments
+- Cheap classification / routing models
+
+## Tier-based routing
+
+You don't pick a model per request — you pick a **tier** in the skill:
+
+```ts
+defineSkill({
+  name: "...",
+  preferredTier: "balanced",  // "fast" | "balanced" | "premium"
+  ...
+});
+```
+
+The router resolves the tier against the configured providers in priority order:
+
+```
+Anthropic ▶ OpenRouter ▶ OpenAI ▶ Ollama
+```
+
+If Anthropic is configured, "balanced" → `claude-sonnet-4-6`. If only OpenRouter is configured, "balanced" → `openrouter:anthropic/claude-sonnet-4`. Routing is in [`packages/providers/src/registry.ts`](https://github.com/belulok/relay-e/blob/master/packages/providers/src/registry.ts).
+
+You can also override per request:
+
+```bash
+curl ... -d '{"prompt":"...","modelKey":"claude-haiku-4-5-20251001"}'
+```
+
+## Adding a new provider
+
+The registry is small (~100 lines). To add a provider:
+
+1. Add the package: `npm i -w @relay-e/providers your-ai-sdk-provider`
+2. In `packages/providers/src/registry.ts`:
+   - Create the client in the `ProviderRegistry` constructor.
+   - Add models to `CHAT_MODELS` with `provider: "yourname"`.
+   - Add a case to `providerFor(id)`.
+3. In `pricing.ts`, add per-model pricing.
+4. Done — `routeBy()` and `chat()` will use it automatically.
+
+## Embeddings
+
+Separate from chat. Configured via `EMBED_MODELS`:
+
+| Model | Provider | Dimensions |
+|---|---|---|
+| `voyage-3` | Voyage | 1024 |
+| `text-embedding-3-small` | OpenAI | 1536 |
+| `text-embedding-3-large` | OpenAI | 3072 |
+| `ollama:nomic-embed-text` | Ollama | 768 |
+
+The schema's `embedding` columns are 1536-dimensional by default — match this when picking your embedding model, or migrate the column when you change.
+
+## Cost-saving tips
+
+| Trick | Saving |
+|---|---|
+| Use `fast` for classification / routing | 50–80% on those calls |
+| Enable Anthropic prompt caching for system prompts | 40–80% on repeat calls |
+| Use OpenRouter to A/B test cheaper models | Variable |
+| Cap `maxSteps` to what your skills actually need | Bounds runaway loops |
+
+See [Concepts → Agent Loop](/docs/concepts/agent-loop) for cost accounting, and [Reference → Token Optimisation](/docs/reference/roadmap) for the full playbook.

@@ -1,0 +1,65 @@
+---
+title: GET /v1/skills, /v1/tools
+description: Introspection endpoints — list what's registered.
+---
+
+Two introspection endpoints to discover the engine's capabilities at runtime.
+
+## List skills
+
+```http
+GET /v1/skills
+Authorization: Bearer <api-key>
+```
+
+Response:
+
+```json
+{
+  "data": [
+    {
+      "name": "financial-advisor",
+      "description": "Reads balances, analyses spending, proposes transfers.",
+      "tools": ["get_balance", "analyze_spending", "transfer_funds"],
+      "preferred_tier": "balanced"
+    }
+  ]
+}
+```
+
+## List tools
+
+```http
+GET /v1/tools
+Authorization: Bearer <api-key>
+```
+
+Response:
+
+```json
+{
+  "data": [
+    {
+      "name": "get_balance",
+      "description": "Return the current balance for a user's account.",
+      "requires_approval": false
+    },
+    {
+      "name": "transfer_funds",
+      "description": "Transfer funds between two accounts. Requires human approval.",
+      "requires_approval": true
+    }
+  ]
+}
+```
+
+## Why bother
+
+These are useful when:
+
+- Your frontend renders a "what can this assistant do?" list.
+- You want to validate, before sending, that the skill name your code is using exists.
+- You're building an admin UI to inspect a deployment.
+- You're writing eval harnesses that need to enumerate skills.
+
+Tool input schemas are not currently exposed by these endpoints (they're in the OpenAPI spec under `components.schemas.SendMessageBody` and the per-tool schemas in `/openapi.json`). Roadmap: include the input JSON schema per tool here too.

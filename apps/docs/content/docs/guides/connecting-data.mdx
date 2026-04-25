@@ -1,0 +1,158 @@
+---
+title: Connecting your data
+description: Three ways to give Relay-E access to your customer's data — direct, REST adapter, MCP server.
+---
+
+The hardest part of any "AI feature" is making the model see real, current, tenant-scoped data. Three options, ordered by effort.
+
+## Option 1 — Direct DB access (lowest effort)
+
+If your app's database is already accessible from where Relay-E runs, write tools that hit it directly:
+
+```ts
+const pool = new Pool({ connectionString: process.env.YOUR_APP_DB_URL });
+
+defineTool({
+  name: "get_user_profile",
+  description: "Get the current user's profile. Use for personalisation.",
+  inputSchema: z.object({}),
+  execute: async (_, ctx) => {
+    const { rows } = await pool.query(
+      `SELECT id, name, plan, created_at
+         FROM users
+        WHERE tenant_id = $1 AND id = $2`,
+      [ctx.tenantId, ctx.userId],
+    );
+    return rows[0] ?? null;
+  },
+});
+```
+
+**When this works**: monolith app, same VPC, you're comfortable adding Relay-E as a DB consumer.
+
+**When it doesn't**: separate networks, microservices boundary, multiple teams own the data.
+
+## Option 2 — REST adapter (medium effort)
+
+If your data is behind an internal REST API:
+
+```ts
+const api = axios.create({
+  baseURL: process.env.YOUR_API_BASE_URL,
+  headers: { authorization: `Bearer ${process.env.YOUR_API_KEY}` },
+});
+
+defineTool({
+  name: "get_recent_orders",
+  description: "Last 10 orders for the current user, newest first.",
+  inputSchema: z.object({ limit: z.number().int().min(1).max(50).default(10) }),
+  execute: async (input, ctx) => {
+    const res = await api.get(`/users/${ctx.userId}/orders`, {
+      params: { limit: input.limit, tenant_id: ctx.tenantId },
+      signal: ctx.signal,
+    });
+    return res.data;
+  },
+});
+```
+
+**When this works**: you already have a clean internal API. Fast to wire.
+
+**When it doesn't**: you don't, and you don't want to build one just for the AI.
+
+## Option 3 — MCP server (highest effort, highest leverage)
+
+[**Model Context Protocol**](https://modelcontextprotocol.io/) is the standard way to expose tools and resources to AI agents. Build an MCP server once, and any MCP-compatible host (Relay-E, Claude Desktop, Cursor, others) can use it.
+
+```ts
+// Your MCP server (separate process, separate repo if you want)
+import { Server } from "@modelcontextprotocol/sdk/server";
+
+const server = new Server({ name: "your-app", version: "1.0.0" });
+
+server.tool(
+  "search_orders",
+  z.object({ q: z.string() }),
+  async ({ q }) => {
+    return await yourApp.searchOrders(q);
+  },
+);
+
+server.resource("user-profile", async (uri) => {
+  return await yourApp.getProfile(extractUserId(uri));
+});
+
+await server.connect(stdioTransport);
+```
+
+Then point Relay-E at it (when the MCP connector adapter lands — currently roadmap):
+
+```ts title=".env"
+MCP_SERVERS=stdio:./mcp-servers/your-app/index.js
+```
+
+**When this works**: you want one source of truth that multiple AI tools can use. Future-proof.
+
+**When it doesn't**: too much overhead for a quick win — start with Option 1 or 2 and graduate to MCP when you have multiple consumers.
+
+## Tenant scoping — non-negotiable
+
+Whichever path you pick: **every query must scope by `ctx.tenantId`**. Two layers:
+
+1. **In the tool's SQL/API call** — `WHERE tenant_id = $1`. This is your primary defense.
+2. **At the database** — Postgres Row-Level Security. Enable when you have customers with strict isolation requirements.
+
+A bug that leaks one tenant's data to another's chat is the worst-case incident for an AI engine. Code defensively.
+
+## Caching expensive context
+
+If a tool result is going to be reused across turns in a session — user profile, plan info, etc. — cache it:
+
+```ts
+import { getRedis } from "@relay-e/queue";
+
+defineTool({
+  name: "get_user_profile",
+  // ...
+  execute: async (_, ctx) => {
+    const redis = getRedis();
+    const key = `profile:${ctx.tenantId}:${ctx.userId}`;
+    const cached = await redis.get(key);
+    if (cached) return JSON.parse(cached);
+
+    const profile = await fetchProfile(ctx);
+    await redis.set(key, JSON.stringify(profile), "EX", 300);
+    return profile;
+  },
+});
+```
+
+5-minute TTL is a reasonable starting point. Tighten or relax based on how stale the data can be.
+
+## When to fetch in the Context Resolver vs. as a tool
+
+Two strategies:
+
+| Pattern | When |
+|---|---|
+| **Resolver pre-fetch** | Always-needed context — user profile, recent activity, skill guardrails |
+| **Tool on-demand** | Sometimes-needed — order details, search hits, report generation |
+
+Pre-fetching everything wastes tokens. Letting the model fetch via tools is more token-efficient but adds round trips. Mix both: pre-fetch the cheap, always-needed items; tool-fetch the expensive ones.
+
+## Real-world example: a finance app
+
+```
+Tools:
+  get_balance(account_id?)        — fast, cheap, often called → cache 30s
+  list_recent_transactions(days)  — medium, called when user asks → no cache
+  analyze_spending(days, by)      — expensive, runs aggregation → cache 5min
+  initiate_transfer(...)          — destructive, requiresApproval
+
+Context Resolver sources:
+  user_profile (priority 90)      — name, tier, preferences
+  recent_session_summary (50)     — what we discussed last time
+  active_alerts (40)              — overdraft warning, etc.
+```
+
+Result: most chat turns cost ~1-3 tool calls + a small context bundle. Token usage stays bounded as the user history grows.

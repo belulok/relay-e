@@ -1,0 +1,156 @@
+---
+title: Observability
+description: Structured logs, request tracing, LLM call tracing, and cost attribution.
+---
+
+The single highest-leverage thing you can do for an AI app is **make every call inspectable**. Without it, debugging is a nightmare. With it, you can trace any user complaint to exactly which prompt, which tools, and which model returned what.
+
+## Structured logs
+
+The engine ships with [Pino](https://getpino.io) and emits one JSON object per log line. Every line includes:
+
+```
+service     "relay-e"
+requestId   "req_..."
+tenantId    "..."
+sessionId   "..."        (when in scope)
+runId       "..."        (queued runs)
+```
+
+Plus event-specific fields. Search by `requestId` to see the entire request:
+
+```
+{"level":30,"time":"...","requestId":"req_aBc","msg":"context_source_ok","source":"vector_search","items":7,"ms":86}
+{"level":30,"time":"...","requestId":"req_aBc","msg":"agent_run_complete","steps":2,"modelKey":"claude-sonnet-4-6","tokens_in":2103,"tokens_out":312,"cost_usd":0.0053}
+```
+
+In production, ship these to:
+
+| Sink | Pattern |
+|---|---|
+| **Datadog** | Pipe stdout to the Datadog agent; auto-parses JSON |
+| **CloudWatch** | Same — JSON logs are first-class |
+| **Loki / Grafana** | Pino → Loki via Promtail or Vector |
+| **Better Stack / Logtail** | Direct Pino transport |
+
+Set `LOG_LEVEL=debug` in dev, `LOG_LEVEL=info` in prod.
+
+## LLM tracing
+
+For LLM-specific tracing — every prompt, every tool call, latency, cost — pick one:
+
+### [Langfuse](https://langfuse.com) (recommended, self-hostable)
+
+Open source, runs in Docker alongside Relay-E. Captures:
+
+- Full prompt text + system message
+- Tool calls and results
+- Per-call latency, token counts, USD cost
+- Sessions / traces grouped by `sessionId`
+
+To wire it: install the Langfuse JS SDK in `packages/engine`, wrap the LLM calls. (Roadmap — the integration points are clear; just not done yet.)
+
+### Helicone
+
+Hosted alternative. Same value prop. Add as a base URL proxy:
+
+```ts
+// In ProviderRegistry, use Helicone as the OpenAI base URL
+createOpenAI({
+  baseURL: "https://oai.helicone.ai/v1",
+  defaultHeaders: { "Helicone-Auth": `Bearer ${process.env.HELICONE_KEY}` },
+});
+```
+
+### Custom
+
+If you want to stay vendor-free, the engine's existing log structure already gives you 80% of what tracing tools provide — just ship `agent_run_complete` events to a database and build your own dashboard.
+
+## Tracing across services
+
+For end-to-end traces (your app → engine → tool → external API), use OpenTelemetry. The engine doesn't emit OTel spans yet (roadmap), but the request boundaries are obvious — wrap with your own middleware in the meantime:
+
+```ts
+// Wrapper around fetch that emits OTel spans
+export async function tracedFetch(input: string, init?: RequestInit) {
+  const span = tracer.startSpan(`HTTP ${init?.method ?? "GET"} ${input}`);
+  try {
+    const res = await fetch(input, init);
+    span.setAttribute("http.status_code", res.status);
+    return res;
+  } finally {
+    span.end();
+  }
+}
+```
+
+## Cost attribution
+
+Every LLM call writes to `usage_events`. Aggregate it:
+
+```sql
+-- Daily cost per tenant
+SELECT tenant_id, DATE(created_at) AS day, SUM(cost_usd) AS usd
+FROM usage_events
+WHERE created_at >= NOW() - INTERVAL '30 days'
+GROUP BY 1, 2
+ORDER BY day DESC, usd DESC;
+
+-- Top models by spend last week
+SELECT model, SUM(cost_usd) AS usd, SUM(tokens_in + tokens_out) AS tokens
+FROM usage_events
+WHERE created_at >= NOW() - INTERVAL '7 days'
+GROUP BY 1
+ORDER BY usd DESC;
+
+-- Average cost per session
+SELECT AVG(per_session.usd) AS avg_session_cost
+FROM (
+  SELECT session_id, SUM(cost_usd) AS usd
+  FROM usage_events
+  WHERE session_id IS NOT NULL
+  GROUP BY session_id
+) per_session;
+```
+
+Build a small dashboard (Metabase, Grafana, or your BI tool) on top of these.
+
+## Errors
+
+Every error response carries a `request_id`. When a customer reports an issue:
+
+1. Get the `request_id` from their UI / network tab.
+2. Search logs by `requestId` → see every step that ran.
+3. Reproduce by replaying the exact prompt + skill combo.
+
+For Sentry / Bugsnag-style aggregation, hook the engine's error handler in [`apps/api/src/middleware/error.ts`](https://github.com/belulok/relay-e/blob/master/apps/api/src/middleware/error.ts):
+
+```ts
+import * as Sentry from "@sentry/node";
+
+export const errorHandler: ErrorHandler = (err, c) => {
+  if (!(err instanceof EngineError) || err.status >= 500) {
+    Sentry.captureException(err, { extra: { requestId: c.get("requestId") } });
+  }
+  // ... existing handling
+};
+```
+
+## Uptime
+
+A simple HTTP probe against `/health` is enough. Any uptime tool (Better Uptime, Uptime Robot, Pingdom, your existing ops dashboard).
+
+For deeper checks, also probe `/v1/skills` with a real API key — that exercises the auth path.
+
+## What to alert on
+
+| Signal | Threshold | Why |
+|---|---|---|
+| `/health` non-200 | 1 minute | Engine is down |
+| LLM `provider_failure` rate | >5% over 5min | Provider issue or key revoked |
+| p95 latency | >5s | Either provider slowdown or context resolver issue |
+| Daily cost per tenant | > 2x rolling 7d avg | Possible abuse or buggy skill |
+| Queue depth | >1000 | Worker not keeping up — scale workers |
+| Failed jobs | >1% | Bug in a tool or context source |
+
+Wire each into your usual alerting stack (PagerDuty, Opsgenie, Slack incoming webhook).

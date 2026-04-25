@@ -1,0 +1,107 @@
+---
+title: Architecture
+description: The full system, layer by layer, and where each piece lives in the repo.
+---
+
+## The big picture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  CLIENT                                                     │
+│  Your app's frontend / SDK / direct HTTP                    │
+└────────────────────┬────────────────────────────────────────┘
+                     │ HTTPS / SSE
+┌────────────────────▼────────────────────────────────────────┐
+│  API GATEWAY (Hono + OpenAPIHono)                           │
+│  Auth · Rate limiting · Request ID · Validation · CORS      │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+┌────────────────────▼────────────────────────────────────────┐
+│  ORCHESTRATION CORE (your IP lives here)                    │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ Session Manager · Memory Compaction                  │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │ Context Resolver (parallel fetch + budget trim)      │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │ Skill Registry · Tool Registry                       │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │ Model Router (fast / balanced / premium)             │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │ Agent Loop (LLM → tool call → result → repeat)       │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │ Safety Layer (Zod validation, HITL, guardrails)      │   │
+│  └──────────────────────────────────────────────────────┘   │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+        ┌────────────┼────────────┬──────────────┐
+        │            │            │              │
+┌───────▼──────┐ ┌───▼──────┐ ┌───▼─────┐ ┌──────▼──────┐
+│ LLM PROVIDERS│ │ MCP HUB  │ │ STORAGE │ │ JOB QUEUE   │
+│ Anthropic    │ │ Built-in │ │ Postgres│ │ BullMQ      │
+│ OpenAI       │ │ Custom   │ │ pgvector│ │ + Redis     │
+│ OpenRouter   │ │ Generic  │ │ Redis   │ │ Long agents │
+│ Ollama       │ │          │ │ S3/Blob │ │ Indexing    │
+└──────────────┘ └──────────┘ └─────────┘ └─────────────┘
+```
+
+## Where each piece lives
+
+```
+apps/
+  api/                Hono + OpenAPIHono server, /v1 endpoints, SSE streaming
+  docs/               This documentation site (Next.js + Fumadocs)
+packages/
+  shared/             Types, errors, logger, content blocks, ids, pricing
+  db/                 Drizzle schema, migrations
+  providers/          LLM provider abstraction + tier routing
+  engine/             Skills, tools, context resolver, agent loop
+  queue/              BullMQ queues + worker process
+docker/               Postgres init scripts (vector, pg_trgm, uuid-ossp)
+docker-compose.yml    Local stack (Postgres + pgvector, Redis; optional Ollama)
+```
+
+Each `packages/*` is an internal workspace package — `private: true`, not published. They share types and utilities across the engine and stay in lockstep with the root version.
+
+## Request lifecycle
+
+A single `POST /v1/sessions/:id/messages` flows through:
+
+1. **Edge** → Cloudflare or your load balancer (TLS, DDoS).
+2. **Gateway** → Hono middleware: auth (`Authorization: Bearer …`), tenant resolution, request-id stamp, rate limit check.
+3. **Input normalization** → multimodal content blocks (text / image / audio / document) are normalized into a single internal format.
+4. **Session loading** → recent turns from Redis, compacted memory from Postgres.
+5. **Context resolution** → all sources fetch in parallel with timeouts: user profile, vector search, MCP tools' resources, real-time APIs. Results are sorted by priority and trimmed to a token budget.
+6. **Model routing** → a cheap rule (or a Haiku-class classifier) picks `fast` / `balanced` / `premium`.
+7. **Agent loop** → the LLM is called; if it emits tool calls, they're validated (Zod), executed, and fed back. Loop until `finish_reason: stop` or `max_steps`.
+8. **Safety** → destructive tools (flagged `requiresApproval`) pause for human approval via the queue.
+9. **Egress** → response streams back as SSE events (`thinking` → `context_resolved` → `tool_call` → `tool_result` → `text` → `usage` → `done`).
+10. **Background work** → memory compaction, embedding updates, eval logging — all on the queue, not in the request path.
+
+Short requests complete in 1–3 seconds. Agentic runs that take 30s+ run on the queue and stream updates.
+
+## Multi-tenancy
+
+`tenant_id` flows through every layer:
+
+- API gateway resolves it from the API key.
+- Every DB row is scoped by `tenant_id`.
+- Postgres **Row-Level Security** is configured but not enforced yet — opt-in via `SET app.tenant_id = '...'` per transaction. (Roadmap.)
+- Embedding queries filter on `tenant_id` AND vector similarity (composite index).
+- Cost / token usage is recorded per `tenant_id` in `usage_events`.
+
+This is the "hardest thing to retrofit" tax paid up front.
+
+## Observability
+
+The engine emits structured Pino logs with `requestId`, `tenantId`, `sessionId`, `runId` on every line. Cost is tracked per call into `usage_events`. Trace integrations (OTel, Langfuse) are roadmap items but the data shape is ready.
+
+## What you write vs. what's free
+
+| You write | Relay-E gives you |
+|---|---|
+| Skills (system prompt + tool list) | Skill registry |
+| Tools (name, schema, handler) | Tool registry, Zod validation, dispatching |
+| Connectors (or MCP servers) | Connector adapter, parallel fetch, retries |
+| The HTTP client in your frontend | The whole API surface + OpenAPI |
+
+Everything else — the loop, model selection, cost accounting, queue, SSE — is yours for free.

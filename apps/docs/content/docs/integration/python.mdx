@@ -1,0 +1,157 @@
+---
+title: Python
+description: Generate a typed Python client from the OpenAPI spec, or use httpx directly.
+---
+
+Two paths: a generated typed client (preferred), or plain `httpx` for the lightest dependency.
+
+## With openapi-python-client (recommended)
+
+```bash
+pip install openapi-python-client
+openapi-python-client generate --url http://localhost:3001/openapi.json
+```
+
+This drops a `relay_e_client/` package next to your code. Use it:
+
+```python
+import os
+from relay_e_client import AuthenticatedClient
+from relay_e_client.api.messages import send_message_v1_sessions_id_messages_post
+from relay_e_client.models import SendMessageBody
+
+client = AuthenticatedClient(
+    base_url=os.environ["RELAY_E_URL"],
+    token=os.environ["RELAY_E_KEY"],
+)
+
+resp = send_message_v1_sessions_id_messages_post.sync_detailed(
+    id="demo",
+    client=client,
+    body=SendMessageBody(
+        prompt="How much did I spend on food last month?",
+        skills=["financial-advisor"],
+    ),
+)
+
+if resp.parsed:
+    print(resp.parsed.content[0].text)
+    print("usage:", resp.parsed.usage)
+else:
+    raise RuntimeError(resp.content)
+```
+
+Pros: typed responses, IDE completion, regenerated when the API changes.
+Cons: an extra dep and a generated package to keep current.
+
+## With httpx (lightest)
+
+If you don't want a generated client, `httpx` is one HTTP call:
+
+```python
+import os
+import httpx
+
+client = httpx.Client(
+    base_url=os.environ["RELAY_E_URL"],
+    headers={"authorization": f"Bearer {os.environ['RELAY_E_KEY']}"},
+    timeout=httpx.Timeout(60.0, connect=5.0),
+)
+
+def ask(session_id: str, prompt: str, skills: list[str] | None = None) -> dict:
+    res = client.post(
+        f"/v1/sessions/{session_id}/messages",
+        json={
+            "prompt": prompt,
+            "skills": skills or ["financial-advisor"],
+        },
+    )
+    res.raise_for_status()
+    return res.json()
+```
+
+## Streaming with httpx
+
+`httpx` handles SSE via `iter_lines()`:
+
+```python
+import json
+
+def ask_stream(session_id: str, prompt: str):
+    with client.stream(
+        "POST",
+        f"/v1/sessions/{session_id}/messages",
+        json={"prompt": prompt, "stream": True, "skills": ["financial-advisor"]},
+    ) as res:
+        res.raise_for_status()
+        for line in res.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            event = json.loads(line[5:].strip())
+            yield event
+
+for event in ask_stream("demo", "Show me my balance."):
+    if event.get("type") == "tool_call":
+        print(f"↳ {event['name']}({event['input']})")
+    elif event.get("type") == "tool_result":
+        print(f"✓ {event['name']} done")
+    elif event.get("text"):
+        print(f"\n{event['text']}")
+    elif event.get("type") == "usage":
+        print(f"  ${event['usage']['cost_usd']:.4f}, {event['usage']['tokens_in'] + event['usage']['tokens_out']} tokens")
+```
+
+## Async (FastAPI + httpx.AsyncClient)
+
+If you're proxying through FastAPI:
+
+```python
+from fastapi import FastAPI, Depends, Request
+from fastapi.responses import StreamingResponse
+
+app = FastAPI()
+client = httpx.AsyncClient(
+    base_url=os.environ["RELAY_E_URL"],
+    headers={"authorization": f"Bearer {os.environ['RELAY_E_KEY']}"},
+    timeout=httpx.Timeout(60.0),
+)
+
+@app.post("/api/chat")
+async def chat(req: Request, user = Depends(get_current_user)):
+    body = await req.json()
+    upstream = await client.send(
+        client.build_request(
+            "POST",
+            f"/v1/sessions/{user.id}/messages",
+            json=body,
+            headers={"x-tenant-id": user.tenant_id, "x-user-id": user.id},
+        ),
+        stream=True,
+    )
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        media_type=upstream.headers.get("content-type", "application/json"),
+    )
+```
+
+Forward the SSE bytes unchanged so the frontend gets the engine's stream verbatim.
+
+## Errors
+
+```python
+try:
+    resp = client.post("/v1/sessions/demo/messages", json={...})
+    resp.raise_for_status()
+except httpx.HTTPStatusError as e:
+    err = e.response.json().get("error", {})
+    print(f"[{err.get('type')} / {err.get('code')}] {err.get('message')}")
+    print(f"request_id: {err.get('request_id')}")
+```
+
+The shape of `err` is documented in [Errors](/docs/api/errors).
+
+## Tips
+
+- Set timeouts. Sync chat completes in under 30 seconds; queued runs may take minutes.
+- Reuse the `Client` / `AsyncClient` — connection pooling matters.
+- For server-to-server use, keep the API key in env / secrets manager. For browser use, proxy through your backend.

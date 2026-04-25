@@ -1,0 +1,109 @@
+---
+title: Errors
+description: Consistent error shape across every endpoint. Always include the request_id when filing an issue.
+---
+
+Every error response from Relay-E has the same shape:
+
+```json
+{
+  "error": {
+    "type": "invalid_request_error",
+    "code": "invalid_body",
+    "message": "Request body did not match schema",
+    "request_id": "req_aBc123",
+    "details": { "field": "prompt" }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `type` | High-level category. Stable across versions. |
+| `code` | Specific failure mode. Stable; safe to switch on. |
+| `message` | Human-readable. May change wording across versions; don't parse. |
+| `request_id` | Echo this when filing issues — it's the join key in the logs. |
+| `details` | Optional structured info (e.g. Zod field path on `invalid_body`). |
+
+## Types and HTTP statuses
+
+| `type` | HTTP | Meaning |
+|---|---|---|
+| `invalid_request_error` | 400 | Body or params don't validate |
+| `authentication_error` | 401 | API key missing / wrong |
+| `permission_error` | 403 | Authenticated but not allowed (roadmap) |
+| `not_found_error` | 404 | Resource doesn't exist |
+| `rate_limit_error` | 429 | Per-tenant rate limit hit |
+| `tenant_quota_error` | 429 | Per-tenant token quota exhausted (roadmap) |
+| `provider_error` | 502 | LLM provider returned an error |
+| `tool_execution_error` | 500 | A tool's `execute` threw |
+| `context_error` | 500 | A context source threw and the whole bundle failed |
+| `internal_error` | 500 | Bug in the engine — open an issue with `request_id` |
+
+## Common codes
+
+| `code` | Hint |
+|---|---|
+| `invalid_body` | Check `details` for the failing field path |
+| `unauthorized` | Set `Authorization: Bearer <key>` |
+| `unknown_model` | `modelKey` doesn't match anything in the registry |
+| `skill_not_found` | Name typo, or skill isn't registered |
+| `provider_failure` | Provider returned an error — check the message |
+| `tool_failed` | A tool threw — its name is in the message |
+| `internal` | Generic catch-all; the cause is in the logs |
+
+## Mapping in your client
+
+```ts
+type RelayError = {
+  error: {
+    type:
+      | "invalid_request_error"
+      | "authentication_error"
+      | "permission_error"
+      | "not_found_error"
+      | "rate_limit_error"
+      | "tenant_quota_error"
+      | "provider_error"
+      | "tool_execution_error"
+      | "context_error"
+      | "internal_error";
+    code: string;
+    message: string;
+    request_id?: string;
+    details?: Record<string, unknown>;
+  };
+};
+
+async function call(req: Request) {
+  const res = await fetch(req);
+  if (res.ok) return res.json();
+  const err: RelayError = await res.json();
+  switch (err.error.type) {
+    case "rate_limit_error":
+      // back off and retry
+      break;
+    case "authentication_error":
+      // redirect to settings / fix config
+      break;
+    case "provider_error":
+      // surface to user; sometimes a retry helps
+      break;
+    case "internal_error":
+      // file an issue with err.error.request_id
+      console.error("relay-e internal error", err.error.request_id);
+      break;
+  }
+  throw new Error(err.error.message);
+}
+```
+
+## What gets logged
+
+Every failure logs with structured fields:
+
+```
+{"level":40,"requestId":"req_...","tenantId":"...","code":"invalid_body","type":"invalid_request_error","msg":"Request body..."}
+```
+
+Search by `requestId` to find the full trace including which tools were called, which provider was used, and what the model emitted.

@@ -1,0 +1,157 @@
+---
+title: Adding a tool
+description: Define a tool with a Zod schema and a handler. Attach to skills. Done.
+---
+
+A tool is a typed function the model can call. The smallest one fits on a postage stamp:
+
+```ts
+defineTool({
+  name: "ping",
+  description: "Health check. Returns ok.",
+  inputSchema: z.object({}),
+  execute: async () => ({ ok: true }),
+});
+```
+
+Walk through a real one:
+
+## A tool that hits your DB
+
+```ts title="apps/api/src/bootstrap/registries.ts"
+import { defineTool } from "@relay-e/engine";
+import { z } from "zod";
+
+defineTool({
+  name: "search_transactions",
+  description:
+    "Search the user's transactions by merchant name and amount range. " +
+    "Returns up to 20 matches sorted by date desc. Use this when the user " +
+    "asks about specific past purchases.",
+  inputSchema: z.object({
+    merchant: z.string().optional(),
+    min_amount_usd: z.number().optional(),
+    max_amount_usd: z.number().optional(),
+    days_back: z.number().int().min(1).max(365).default(30),
+  }),
+  execute: async (input, ctx) => {
+    const rows = await yourDb.query(
+      `SELECT id, date, merchant, amount_usd
+         FROM transactions
+        WHERE tenant_id = $1
+          AND user_id = $2
+          AND ($3::text IS NULL OR merchant ILIKE '%' || $3 || '%')
+          AND amount_usd BETWEEN COALESCE($4, 0) AND COALESCE($5, 999999)
+          AND date >= NOW() - $6 * INTERVAL '1 day'
+        ORDER BY date DESC
+        LIMIT 20`,
+      [ctx.tenantId, ctx.userId, input.merchant, input.min_amount_usd, input.max_amount_usd, input.days_back],
+    );
+    return { count: rows.length, transactions: rows };
+  },
+});
+```
+
+Three things to notice:
+
+1. **`ctx.tenantId` is non-negotiable** — every query is scoped. The engine sets it from the API key.
+2. **`description` is what the model reads.** Time spent on it is the highest-leverage time you'll spend on tools.
+3. **The return value is what the model sees as the tool result.** Keep it small. 20 rows beats 2000.
+
+## A tool that calls an external API
+
+```ts
+defineTool({
+  name: "current_weather",
+  description: "Current weather for a city. Returns temp_c and a condition.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }, ctx) => {
+    const res = await fetch(
+      `https://api.weather.example/v1/current?city=${encodeURIComponent(city)}`,
+      { signal: ctx.signal, headers: { authorization: `Bearer ${process.env.WEATHER_KEY}` } },
+    );
+    if (!res.ok) throw new Error(`weather_api_${res.status}`);
+    return await res.json();
+  },
+});
+```
+
+Use `ctx.signal` so a slow API doesn't pin a turn that the client already abandoned.
+
+## A destructive tool
+
+```ts
+defineTool({
+  name: "send_email",
+  description: "Send an email on behalf of the user. Requires approval.",
+  requiresApproval: true,                          // <-- pause for HITL
+  inputSchema: z.object({
+    to: z.string().email(),
+    subject: z.string().max(200),
+    body: z.string(),
+  }),
+  execute: async (input, ctx) => {
+    const id = await emailProvider.send({ ...input, from: ctx.userId });
+    return { message_id: id, sent_at: new Date().toISOString() };
+  },
+});
+```
+
+In sync mode, the engine emits `tool_awaiting_approval` and continues (use this to surface a confirmation UI). In queued mode (`/v1/runs`), the run pauses for an explicit `POST /v1/runs/:id/approve` before `execute` runs.
+
+## Attach to a skill
+
+A tool doesn't help on its own — attach it to one or more skills:
+
+```ts
+skills.register(
+  defineSkill({
+    name: "personal-assistant",
+    systemPrompt: "You are a helpful personal assistant.",
+    toolNames: ["search_transactions", "current_weather", "send_email"],
+    preferredTier: "balanced",
+    description: "Personal assistant",
+  }),
+);
+```
+
+The same tool can be attached to many skills.
+
+## Schema hints — `.describe()` matters
+
+The Zod `.describe()` method puts the description into the JSON schema the model sees:
+
+```ts
+inputSchema: z.object({
+  account_id: z.string().describe("Account ID, e.g. acc_42. Use 'primary' for the user's default account."),
+  days: z.number().int().min(1).max(365).default(30).describe("Lookback window in days."),
+})
+```
+
+This is tool-description-grade copy — write it for the model, not for yourself.
+
+## What gets validated
+
+```
+Model emits → { account_id: "acc_42", days: "thirty" }
+Engine validates with Zod → days is not a number → error to model
+Model retries → { account_id: "acc_42", days: 30 } → execute runs
+```
+
+You don't write defensive code in `execute`. By the time it runs, input is already typed and validated.
+
+## Output limits
+
+| Result size | Action |
+|---|---|
+| Under 1KB | Inline, no thought needed |
+| 1–10KB | Fine, but consider summarising |
+| 10–100KB | Summarise + offer follow-up tool for details |
+| Over 100KB | Write to S3, return `{ url, summary }` |
+
+Big results burn tokens twice — once when sent to the model and again as the model echoes them in its reply.
+
+## Where to look
+
+- Tool registry implementation: [`packages/engine/src/tools/index.ts`](https://github.com/belulok/relay-e/blob/master/packages/engine/src/tools/index.ts)
+- Examples: [`apps/api/src/bootstrap/registries.ts`](https://github.com/belulok/relay-e/blob/master/apps/api/src/bootstrap/registries.ts) (`get_balance`, `analyze_spending`, `transfer_funds`)

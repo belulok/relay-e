@@ -1,0 +1,69 @@
+---
+title: API Overview
+description: Stripe-style REST + SSE. Versioned. Auto-documented via OpenAPI.
+---
+
+The Relay-E HTTP API is **REST + SSE**, versioned (`/v1/*`), and auto-described by OpenAPI 3.1 at `/openapi.json`. Use any OpenAPI-aware tool to import it.
+
+## Conventions
+
+- **Base URL**: `http://localhost:3001` (dev) or wherever you've deployed
+- **Auth**: `Authorization: Bearer <api-key>`
+- **Content types**: `application/json` for sync, `text/event-stream` for streaming
+- **IDs**: prefixed (`req_…`, `ses_…`, `msg_…`, `run_…`, `tc_…`)
+- **Errors**: consistent `{ error: { type, code, message, request_id } }` shape (see [Errors](/docs/api/errors))
+- **Idempotency**: send `Idempotency-Key` header on POSTs that have side effects (roadmap)
+
+## Resource hierarchy
+
+```
+GET    /health                                  Liveness probe
+GET    /openapi.json                            OpenAPI 3.1 spec
+GET    /docs                                    Interactive Scalar UI
+
+GET    /v1/skills                               List registered skills
+GET    /v1/tools                                List registered tools
+
+POST   /v1/sessions/:id/messages                Send a message (sync or stream)
+                                                  └─ stream: true → SSE
+                                                  └─ stream: false → JSON
+
+POST   /v1/runs                                 Start an agent run (queued)        roadmap
+GET    /v1/runs/:id                             Get run status                      roadmap
+GET    /v1/runs/:id/events                      Stream run events (SSE)             roadmap
+POST   /v1/runs/:id/approve                     Approve a HITL action               roadmap
+POST   /v1/runs/:id/cancel                      Cancel a running run                roadmap
+
+POST   /v1/files                                Upload a file                       roadmap
+GET    /v1/usage                                Per-tenant token + cost summary     roadmap
+```
+
+## Quick reference
+
+```bash
+# Discovery
+curl http://localhost:3001/v1/skills -H "Authorization: Bearer $KEY"
+curl http://localhost:3001/v1/tools  -H "Authorization: Bearer $KEY"
+
+# Sync chat
+curl -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Hello","skills":["financial-advisor"]}'
+
+# Stream chat
+curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Hello","skills":["financial-advisor"],"stream":true}'
+```
+
+## OpenAPI
+
+Every route's request/response is defined as a Zod schema. The same schema validates input at runtime AND drives `/openapi.json`. There's no separate doc step — adding a route in `apps/api/src/routes/` makes it appear in the spec on the next request.
+
+```bash
+npm run openapi:export   # writes a snapshot to docs/openapi.json
+```
+
+For Postman / Bruno / Insomnia / any language's OpenAPI codegen, see [Integration → Any language](/docs/integration/any-language).

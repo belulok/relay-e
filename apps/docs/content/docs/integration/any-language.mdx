@@ -1,0 +1,100 @@
+---
+title: Any language (OpenAPI)
+description: Pick your stack. There's an OpenAPI generator for it.
+---
+
+Because Relay-E exposes OpenAPI 3.1 at `/openapi.json`, every mainstream language gets a typed client for free. Run the generator once, get a typed SDK, regenerate when the API changes.
+
+## Quick reference
+
+| Language | Generator | One-liner |
+|---|---|---|
+| TypeScript | `openapi-typescript-codegen` | `npx openapi-typescript-codegen --input http://localhost:3001/openapi.json --output ./client` |
+| Python | `openapi-python-client` | `openapi-python-client generate --url http://localhost:3001/openapi.json` |
+| Go | `oapi-codegen` | `oapi-codegen -package relayE http://localhost:3001/openapi.json > relay_e.go` |
+| Rust | `openapi-generator` | `openapi-generator generate -i http://localhost:3001/openapi.json -g rust -o ./client` |
+| Ruby | `openapi-generator` | `openapi-generator generate -i ... -g ruby -o ./client` |
+| Java | `openapi-generator` | `openapi-generator generate -i ... -g java -o ./client` |
+| C# | `openapi-generator` | `openapi-generator generate -i ... -g csharp -o ./client` |
+| Swift | `openapi-generator` | `openapi-generator generate -i ... -g swift5 -o ./client` |
+| PHP | `openapi-generator` | `openapi-generator generate -i ... -g php -o ./client` |
+| Kotlin | `openapi-generator` | `openapi-generator generate -i ... -g kotlin -o ./client` |
+| Dart | `openapi-generator` | `openapi-generator generate -i ... -g dart -o ./client` |
+
+`openapi-generator` is the [umbrella tool](https://openapi-generator.tech/) that supports 60+ languages. Install via Homebrew (`brew install openapi-generator`), npm (`@openapitools/openapi-generator-cli`), or Docker.
+
+## Without codegen — raw HTTP
+
+The API is plain REST + JSON, so you don't need a generator. Any HTTP client works:
+
+```bash
+# Bash / curl
+curl -X POST $RELAY_E_URL/v1/sessions/demo/messages \
+  -H "authorization: Bearer $RELAY_E_KEY" \
+  -H "content-type: application/json" \
+  -d '{"prompt":"hi","skills":["financial-advisor"]}'
+```
+
+```php
+// PHP / Guzzle
+$client = new \GuzzleHttp\Client(['base_uri' => $relayEUrl]);
+$res = $client->post('/v1/sessions/demo/messages', [
+    'headers' => ['authorization' => "Bearer {$key}"],
+    'json' => ['prompt' => $prompt, 'skills' => ['financial-advisor']],
+]);
+```
+
+```ruby
+# Ruby / Faraday
+conn = Faraday.new(url: ENV['RELAY_E_URL']) do |f|
+  f.request :authorization, 'Bearer', ENV['RELAY_E_KEY']
+  f.request :json
+  f.response :json
+end
+res = conn.post('/v1/sessions/demo/messages', { prompt: prompt, skills: ['financial-advisor'] })
+```
+
+```go
+// Go / net/http
+body, _ := json.Marshal(map[string]any{
+    "prompt": "hi", "skills": []string{"financial-advisor"},
+})
+req, _ := http.NewRequest("POST", relayEURL+"/v1/sessions/demo/messages", bytes.NewReader(body))
+req.Header.Set("authorization", "Bearer "+relayEKey)
+req.Header.Set("content-type", "application/json")
+res, _ := http.DefaultClient.Do(req)
+```
+
+## Streaming (SSE)
+
+SSE is plain HTTP with a streaming body and `text/event-stream` content type. Every language can parse it, though some have nicer libraries:
+
+| Language | SSE library |
+|---|---|
+| Python | `httpx` (`iter_lines`), `sseclient-py` |
+| Go | `r3labs/sse` |
+| Java | `okhttp-sse`, `okhttp3.sse.EventSources` |
+| Rust | `eventsource-client` |
+| Ruby | `ld-eventsource` |
+| C# | `LaunchDarkly.EventSource` |
+| Browser | `EventSource` (built-in, but no POST — use `fetch` + a parser) |
+
+The generic SSE parsing logic is ~30 lines: split on `\n\n`, find lines starting with `data:`, parse JSON. See [Guides → Streaming](/docs/guides/streaming) for the format.
+
+## Generated client conventions
+
+Most generators produce:
+
+- One service / module per OpenAPI tag (`Health`, `Messages`, `Skills`, `Tools`)
+- Typed request/response models
+- A central `Client` or `Configuration` for base URL + auth
+
+The shape is similar enough that translating between languages is mostly cosmetic — the important business logic stays the same.
+
+## Schema-first benefit
+
+Adding a new route in `apps/api/src/routes/` re-generates the spec automatically. Re-run your codegen and your typed client picks up the new endpoint. No manual SDK maintenance.
+
+## Postman / Bruno / Insomnia
+
+These import OpenAPI directly — see [Postman](/docs/integration/postman).

@@ -1,0 +1,138 @@
+---
+title: Quickstart
+description: From zero to a streaming agent response in five minutes.
+---
+
+This walks through the **fastest path** to a working agent run. We'll use the bundled `financial-advisor` example skill.
+
+## 1. Install (1 min)
+
+```bash
+git clone https://github.com/belulok/relay-e.git && cd relay-e
+nvm use
+npm install
+cp .env.example .env
+```
+
+Edit `.env` and add **one** provider key:
+
+```bash title=".env"
+DEV_API_KEY=sk_dev_local_change_me
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+## 2. Boot the stack (1 min)
+
+```bash
+npm run stack:up
+npm run db:generate && npm run db:migrate
+npm run dev
+```
+
+The API is up at `http://localhost:3001`. Open [/docs](http://localhost:3001/docs) for the interactive Scalar UI.
+
+## 3. Send a sync message (1 min)
+
+```bash
+curl -s -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer sk_dev_local_change_me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "How much did I spend on food last month?",
+    "skills": ["financial-advisor"]
+  }' | jq
+```
+
+You'll get back something like:
+
+```json
+{
+  "id": "msg_...",
+  "session_id": "demo",
+  "role": "assistant",
+  "content": [{ "type": "text", "text": "Last month you spent..." }],
+  "usage": { "tokens_in": 1234, "tokens_out": 215, "cost_usd": 0.003 },
+  "finish_reason": "stop",
+  "tool_calls": [
+    { "name": "analyze_spending", "input": { "days": 30 }, "output": {...} }
+  ],
+  "context": { "sources": ["skill_guardrails"] }
+}
+```
+
+The agent decided to call `analyze_spending`, got back data, and used it to answer. **You wrote zero orchestration code.**
+
+## 4. Stream it (1 min)
+
+```bash
+curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer sk_dev_local_change_me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Show my balance and top spending categories.",
+    "skills": ["financial-advisor"],
+    "stream": true
+  }'
+```
+
+You'll see SSE events flow in:
+
+```
+event: thinking
+data: {"step":"resolving_context"}
+
+event: context_resolved
+data: {"sources":["skill_guardrails"],"tokenEstimate":12}
+
+event: tool_call
+data: {"tool_call_id":"tc_...","name":"get_balance","input":{...}}
+
+event: tool_result
+data: {"tool_call_id":"tc_...","name":"get_balance","output":{...}}
+
+event: usage
+data: {"usage":{"tokens_in":2103,"tokens_out":312,"cost_usd":0.005},"model":"claude-sonnet-4-6"}
+
+event: text
+data: {"text":"Your balance is $4,231.55..."}
+```
+
+## 5. Add your own skill (1 min)
+
+Open [`apps/api/src/bootstrap/registries.ts`](https://github.com/belulok/relay-e/blob/master/apps/api/src/bootstrap/registries.ts):
+
+```ts
+tools.register(defineTool({
+  name: "get_weather",
+  description: "Return current weather for a city.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }) => ({ city, temp_c: 22, condition: "sunny" }),
+}));
+
+skills.register(defineSkill({
+  name: "weather-bot",
+  description: "Answers questions about the weather.",
+  systemPrompt: "You are a helpful weather assistant.",
+  toolNames: ["get_weather"],
+  preferredTier: "fast",
+}));
+```
+
+Restart `npm run dev`, then:
+
+```bash
+curl -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer sk_dev_local_change_me" \
+  -d '{"prompt":"What is the weather in Tokyo?","skills":["weather-bot"]}'
+```
+
+The new skill is auto-listed in `/v1/skills`, the new tool in `/v1/tools`, and both appear in `/openapi.json` and the `/docs` UI without any restart of those pages.
+
+## What's next
+
+<Cards>
+  <Card title="Concepts → Skills" href="/docs/concepts/skills" />
+  <Card title="Concepts → Tools" href="/docs/concepts/tools" />
+  <Card title="Guides → Connecting your data" href="/docs/guides/connecting-data" />
+  <Card title="Integration → Use it from your app" href="/docs/integration/overview" />
+</Cards>

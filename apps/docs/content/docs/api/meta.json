@@ -1,0 +1,5 @@
+{
+  "title": "API Reference",
+  "icon": "Terminal",
+  "pages": ["overview", "authentication", "messages", "skills", "errors", "sse-events"]
+}

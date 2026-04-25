@@ -1,0 +1,103 @@
+---
+title: Skills
+description: A skill is a system prompt + a set of tools + a preferred model tier. The unit you ship to your users.
+---
+
+A **skill** is the smallest user-visible unit of capability in Relay-E. It bundles:
+
+- A **system prompt** — the persona and rules.
+- A **tool set** — the functions the model is allowed to call.
+- A **preferred model tier** — `fast` / `balanced` / `premium`.
+- Optional **examples** — few-shot guidance.
+
+Customers (your end users) compose skills. Their assistant might be the `financial-advisor` skill plus the `customer-support` skill, sharing a session.
+
+## Defining a skill
+
+```ts title="apps/api/src/bootstrap/registries.ts"
+import { defineSkill } from "@relay-e/engine";
+
+skills.register(
+  defineSkill({
+    name: "financial-advisor",
+    description: "Reads balances, analyses spending, proposes transfers.",
+    systemPrompt:
+      "You are a personal finance assistant. Use the tools to fetch real " +
+      "data — never invent balances or transactions. For destructive actions " +
+      "(transfers), explain what you're about to do and rely on the approval flow.",
+    toolNames: ["get_balance", "analyze_spending", "transfer_funds"],
+    preferredTier: "balanced",
+    examples: [
+      {
+        input: "How much did I spend on food last month?",
+        output:
+          "Calling analyze_spending(days=30) and reporting dining + groceries.",
+      },
+    ],
+  }),
+);
+```
+
+## Picking a tier
+
+The model router resolves the preferred tier against the configured providers:
+
+| Tier | When to pick | Default model (Anthropic) |
+|---|---|---|
+| **`fast`** | Classification, simple Q&A, routing decisions | `claude-haiku-4-5` |
+| **`balanced`** | Most chat workloads — great quality, sane cost | `claude-sonnet-4-6` |
+| **`premium`** | Complex reasoning, agentic planning, hard to redo | `claude-opus-4-7` |
+
+If you've configured OpenRouter or OpenAI instead, the router falls back to their equivalents. See [Concepts → Providers](/docs/concepts/providers).
+
+## Composing skills at the request
+
+A request can activate multiple skills:
+
+```bash
+curl -X POST .../v1/sessions/demo/messages \
+  -d '{
+    "prompt": "...",
+    "skills": ["financial-advisor", "customer-support"]
+  }'
+```
+
+When multiple skills are active:
+
+- System prompts are concatenated under `# Skills` headings.
+- Tool sets are unioned (deduped by name).
+- The first skill's `preferredTier` wins.
+
+## When to make a new skill vs. add a tool
+
+| Reason | What to do |
+|---|---|
+| The model needs new ability (search, compute, mutate) | Add a **tool**, attach it to one or more skills. |
+| The persona / safety rules differ | Make a new **skill**. |
+| The same data, different audience (user vs. admin) | Make two skills that share most tools but vary system prompts. |
+| One-off prompt customization | Pass `instructions` on the message — don't make a skill for it. |
+
+## Skill-as-config (roadmap)
+
+Today, skills are TypeScript: they live in `bootstrap/registries.ts` and require a fork to extend. The roadmap is to make skills loadable from JSON / DB / env so customers can author their own without forking. The schema is already designed in [`packages/engine/src/skills/index.ts`](https://github.com/belulok/relay-e/blob/master/packages/engine/src/skills/index.ts) — it's serialisable.
+
+When that lands, the same schema will power:
+
+- A skill management API (`POST /v1/skills`)
+- A web UI for authoring (in the dashboard, when that ships)
+- Versioned skill marketplaces
+
+## Reference
+
+```ts
+interface SkillDefinition {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  toolNames: string[];
+  preferredTier?: "fast" | "balanced" | "premium";
+  requiredModalities?: Array<"text" | "image" | "audio" | "video" | "document">;
+  examples?: Array<{ input: string; output: string }>;
+  config?: Record<string, unknown>;
+}
+```

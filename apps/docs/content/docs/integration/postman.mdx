@@ -1,0 +1,91 @@
+---
+title: Postman & friends
+description: Postman / Bruno / Insomnia / Hoppscotch — all import OpenAPI in one click.
+---
+
+Because the OpenAPI spec is auto-generated, importing into any HTTP client is a single click — no codegen, no manual export.
+
+## Postman — live import
+
+1. Open Postman → **Import** → paste the URL: `http://localhost:3001/openapi.json`
+2. Click **Generate collection**.
+
+Postman builds a collection with every endpoint, request body, and example. Re-import any time the API changes — Postman supports updating an existing collection.
+
+## Postman — environment
+
+Set up an environment with two variables so you don't paste the bearer token everywhere:
+
+| Variable | Initial value |
+|---|---|
+| `base_url` | `http://localhost:3001` |
+| `api_key` | `sk_dev_local_change_me` |
+
+In each request's Authorization tab: **Bearer Token** → `{{api_key}}`.
+
+## Offline import (snapshot)
+
+If you want to share a static snapshot (CI artefact, give to a non-developer who can't run the server):
+
+```bash
+npm run dev                # one terminal
+npm run openapi:export     # another terminal
+# Writes apps/api/docs/openapi.json
+```
+
+Now you can email or commit `docs/openapi.json` and import the file:
+
+- Postman: **Import → File → select openapi.json**
+- Bruno: same
+- Insomnia: same
+
+## Bruno
+
+[Bruno](https://www.usebruno.com/) is an open-source Postman alternative that stores collections as files in your repo (great for version control).
+
+```bash
+# Import via the UI: Settings → Import collection → OpenAPI v3 spec
+# Or git-track the imported folder for team-shared collections
+```
+
+Bruno's `.bru` format diffs cleanly in PRs — useful if you want collection changes reviewed.
+
+## Insomnia
+
+Same flow: **Import → URL → http://localhost:3001/openapi.json**.
+
+Insomnia also supports environment variables for `base_url` / `api_key` — set them at the workspace level.
+
+## Hoppscotch
+
+Browser-based. **Settings → Workspaces → Import** → paste OpenAPI URL. Convenient for quick checks without installing anything.
+
+## SSE testing
+
+Postman supports SSE responses since v10.18:
+
+1. Make a `POST` request to `/v1/sessions/demo/messages` with `stream: true` in the body.
+2. Postman opens an SSE viewer that shows events as they arrive.
+
+For Bruno / Insomnia (no native SSE), use `curl -N` from the terminal:
+
+```bash
+curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "authorization: Bearer $DEV_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"prompt":"hi","skills":["financial-advisor"],"stream":true}'
+```
+
+## Auto-update
+
+Because the spec is generated at request time:
+
+- Add a route in `apps/api/src/routes/` → it appears in `/openapi.json` immediately
+- Update Zod schemas → request/response shapes update in the spec
+- Re-import in Postman → collection refreshes
+
+This eliminates the "API changed but the Postman collection is stale" problem that plagues hand-maintained collections.
+
+## What about the in-app docs UI?
+
+You also get a [Scalar](https://scalar.com) UI at `http://localhost:3001/docs` — interactive, browseable, and rendered directly from the same OpenAPI spec. Use it to explore; use Postman / Bruno when you want to save and share request collections.

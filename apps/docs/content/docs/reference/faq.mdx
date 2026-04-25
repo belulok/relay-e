@@ -1,0 +1,110 @@
+---
+title: FAQ
+description: Questions that come up repeatedly.
+---
+
+## How is this different from LangChain or LlamaIndex?
+
+LangChain and LlamaIndex are libraries you embed in your app. Relay-E is a **server you run**. Your app calls it over HTTP. That difference means:
+
+- Multi-tenant from day one (`tenant_id` everywhere).
+- One image to deploy, scale, monitor — not a library version pinned per service.
+- The orchestration logic is yours to fork; the abstractions are yours to control.
+- We use the Vercel AI SDK underneath for the actual provider calls (much thinner than LangChain), but the loop, registry, context resolver, and queue are ours.
+
+If you're building one chatbot for one app, a library is enough. If you're building a multi-tenant assistant feature in a SaaS, the library boundary becomes a server boundary in production anyway.
+
+## Why not just use the OpenAI SDK / Anthropic SDK directly?
+
+You can. For a single feature in a single app, that's the right call.
+
+The "wrap a single SDK call" approach falls apart when you need:
+
+- More than one provider (or you want to A/B test models)
+- More than one skill (each with different tools)
+- Multi-tenant cost attribution and quotas
+- Durable runs that survive a server restart
+- A pluggable context resolver
+- An OpenAPI surface for clients in other languages
+
+Each of those is a few hundred lines. Stacked, they're a service. That service is Relay-E.
+
+## Is this production-ready?
+
+`v0.0.1`. Foundation is solid (typecheck + tests + CI green; Docker image published; observability hooks in place). What's missing for production:
+
+- Per-tenant API keys (today: a single `DEV_API_KEY`)
+- Persistence of sessions / messages (today: nothing is stored across requests)
+- Rate limiting / quotas
+- A real connector library (today: stub MCP)
+
+Run it now if you're early-stage and want a foundation to extend. Wait for `v0.x` (feature-complete) or `v1.0` (API-stable) if you need everything bundled.
+
+## Why TypeScript / Node?
+
+Three reasons:
+
+1. The AI SDK ecosystem is TypeScript-first as of 2026 (Vercel AI SDK, MCP SDK, the major tooling).
+2. Your customers integrate from many languages — you only need one for the engine itself, and TS gives you the broadest hireable pool.
+3. Hono + Zod + Drizzle is a tight, fast stack with great ergonomics.
+
+If we were starting today and the team was Python-heavy, FastAPI + Pydantic + SQLAlchemy is a defensible alternative. We're not switching.
+
+## Why Postgres + pgvector instead of Pinecone / Weaviate / Qdrant?
+
+One database is dramatically simpler to operate than two. pgvector handles millions of vectors fine, hybrid queries (filter by `tenant_id` AND vector similarity) are trivial, and you only have one set of operational concerns.
+
+Switch to a dedicated vector DB only when you've measurably outgrown pgvector. Most teams never do.
+
+## Why BullMQ instead of Inngest?
+
+Both are solid. We picked BullMQ because:
+
+- Redis is already in the stack — no new dependency.
+- Self-hosted by default — no vendor lock-in for the queue.
+- Familiar `Queue`/`Worker` API.
+
+Inngest is a great alternative if you want durable workflows with sleeps and waits. If we ever need cross-process step durability, that's the trigger to revisit.
+
+## Can I run this with just OpenAI / no other deps?
+
+Yes — set `OPENAI_API_KEY` and skip the others. The router falls back to OpenAI when only that's configured. The Postgres + Redis dependencies are still required (for sessions, cost tracking, queue) — those are non-negotiable for the engine's value-add.
+
+## Can I run this with no LLM key (fully offline)?
+
+Yes — Ollama profile:
+
+```bash
+docker compose --profile local-llm up -d
+docker exec relay-e-ollama ollama pull llama3.2
+```
+
+Set `OLLAMA_BASE_URL=http://localhost:11434` in `.env`. Quality is lower than frontier models but works for dev and air-gapped use cases.
+
+## How do I add a new LLM provider?
+
+Three places to edit, ~50 lines total. See [Concepts → Providers](/docs/concepts/providers#adding-a-new-provider).
+
+## Can I use this without forking?
+
+For demos and prototypes — yes, run the published Docker image with the bundled `financial-advisor` skill. For real domain logic — fork, edit `apps/api/src/bootstrap/registries.ts`, deploy your fork.
+
+The fork story will improve dramatically when **skill-as-config** lands (see roadmap). Then most use cases won't need a fork.
+
+## Is the data sent to the LLM provider?
+
+Yes — the entire system prompt, context bundle, and tool results are sent to whichever provider you configured. If you need data to never leave your infra, use the **Ollama** profile (fully offline) or pick an LLM provider with a BAA / DPA (Anthropic and OpenAI both offer enterprise terms).
+
+## Can I bring my own database?
+
+The schema is Drizzle / Postgres-specific today. You can swap to a different Postgres provider (Neon, Supabase, RDS, etc.) — that's just changing `DATABASE_URL`. Swapping to a different database engine (MySQL, etc.) is a bigger lift and not on the roadmap.
+
+## How do I contribute?
+
+See [CONTRIBUTING.md](https://github.com/belulok/relay-e/blob/master/CONTRIBUTING.md). Conventional Commits, typecheck before pushing, tests for new behaviour. Small PRs preferred.
+
+## Where do I file bugs / requests?
+
+GitHub Issues: [github.com/belulok/relay-e/issues](https://github.com/belulok/relay-e/issues)
+
+Always include a `request_id` from your logs when reporting a runtime issue.

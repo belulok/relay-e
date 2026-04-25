@@ -1,0 +1,187 @@
+---
+title: POST /v1/sessions/:id/messages
+description: The chat endpoint. JSON or SSE based on the stream flag.
+---
+
+The single endpoint that runs the agent loop and returns a response.
+
+## Request
+
+```http
+POST /v1/sessions/{id}/messages
+Authorization: Bearer <api-key>
+Content-Type: application/json
+
+{
+  "prompt": "string",
+  "skills": ["string"],
+  "stream": false,
+  "modelKey": "string?"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `prompt` | string | yes | The user message. |
+| `skills` | string[] | no | Skill names to activate. Defaults to `["financial-advisor"]` (the example skill). |
+| `stream` | bool | no | If `true`, response is `text/event-stream`. If `false` (default), JSON. |
+| `modelKey` | string | no | Override the model for this request. Useful for A/B testing. |
+
+`{id}` is a free-form session identifier. Sessions persist context across messages (memory compaction is roadmap; today, only what you send is what the engine sees).
+
+## Sync response (`stream: false`)
+
+```json
+{
+  "id": "msg_aBc...",
+  "session_id": "demo",
+  "role": "assistant",
+  "content": [
+    { "type": "text", "text": "Last month you spent $1,842.40 with the largest categories being..." }
+  ],
+  "usage": {
+    "tokens_in": 2103,
+    "tokens_out": 312,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.005346
+  },
+  "finish_reason": "stop",
+  "tool_calls": [
+    {
+      "name": "analyze_spending",
+      "input": { "days": 30 },
+      "output": { "total_usd": 1842.4, "categories": [...] }
+    }
+  ],
+  "context": {
+    "sources": ["skill_guardrails"]
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `id` | Message ID (prefixed `msg_`). |
+| `usage` | Token + USD accounting for this turn. |
+| `finish_reason` | `stop` (normal), `tool_calls` (interrupted), `length` (budget hit). |
+| `tool_calls` | Array of every tool the model invoked. |
+| `context.sources` | Names of context sources that contributed. |
+
+## Streaming response (`stream: true`)
+
+`Content-Type: text/event-stream`. See [SSE Events](/docs/api/sse-events) for the full event reference.
+
+```
+event: thinking
+data: {"type":"thinking","step":"resolving_context"}
+
+event: context_resolved
+data: {"type":"context_resolved","sources":["..."],"tokenEstimate":12}
+
+event: tool_call
+data: {"type":"tool_call","tool_call_id":"tc_...","name":"analyze_spending","input":{"days":30}}
+
+event: tool_result
+data: {"type":"tool_result","tool_call_id":"tc_...","name":"analyze_spending","output":{...}}
+
+event: usage
+data: {"type":"usage","usage":{...},"model":"claude-sonnet-4-6"}
+
+event: text
+data: {"text":"Last month you spent $1,842.40..."}
+
+event: done
+data: {"type":"done","usage":{...},"finish_reason":"stop"}
+```
+
+Connect from a frontend: see [Guides → Streaming](/docs/guides/streaming).
+
+## Examples
+
+### cURL — sync
+
+```bash
+curl -s -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $DEV_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "How much did I spend on food last month?",
+    "skills": ["financial-advisor"]
+  }' | jq
+```
+
+### cURL — stream
+
+```bash
+curl -N -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $DEV_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Show my balance and top categories.",
+    "skills": ["financial-advisor"],
+    "stream": true
+  }'
+```
+
+### TypeScript (with `openapi-typescript-codegen`)
+
+```ts
+import { RelayEClient } from "@/lib/relay-e";
+
+const client = new RelayEClient({
+  BASE: "https://relay-e.example.com",
+  TOKEN: process.env.RELAY_E_KEY,
+});
+
+const result = await client.messages.sendMessage({
+  id: sessionId,
+  requestBody: {
+    prompt: userQuestion,
+    skills: ["financial-advisor"],
+    stream: false,
+  },
+});
+console.log(result.content[0].text);
+```
+
+### Python (with `openapi-python-client`)
+
+```python
+from relay_e_client import Client
+from relay_e_client.api.messages import send_message
+from relay_e_client.models import SendMessageBody
+
+client = Client(base_url="https://relay-e.example.com", token=os.environ["RELAY_E_KEY"])
+
+result = send_message.sync(
+    id=session_id,
+    client=client,
+    body=SendMessageBody(prompt="Hello", skills=["financial-advisor"]),
+)
+print(result.content[0].text)
+```
+
+## Error cases
+
+| HTTP | Body `code` | Why |
+|---|---|---|
+| 400 | `invalid_body` | Request body didn't match the Zod schema |
+| 401 | `unauthorized` | Missing / wrong API key |
+| 404 | `skill_not_found` | The skill name isn't registered |
+| 429 | `rate_limited` | (Roadmap) per-tenant quota exceeded |
+| 502 | `provider_failure` | The LLM provider returned an error |
+| 500 | `internal` | Engine bug — log the `request_id` and file an issue |
+
+See [Errors](/docs/api/errors) for the full payload shape.
+
+## Idempotency (roadmap)
+
+For requests that have side effects (tool calls), supply an `Idempotency-Key` header:
+
+```http
+POST /v1/sessions/demo/messages
+Idempotency-Key: <client-generated-uuid>
+```
+
+The engine will return the same response on retry within a 24-hour window. Today it's accepted but not deduped.

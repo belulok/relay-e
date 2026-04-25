@@ -1,0 +1,57 @@
+---
+title: Introduction
+description: What Relay-E is, who it's for, and how it differs from a "wrap an LLM" library.
+---
+
+Relay-E is an **AI orchestration engine**. It's the layer between an LLM (Anthropic, OpenAI, OpenRouter, Ollama) and your customers' real data — pulling relevant context before each turn, picking the right model, executing tools, tracking cost, and streaming a typed event channel back to your app.
+
+It's not a chat UI. It's not a prompt-template helper. It's the thing your chat UI calls.
+
+## The mental model
+
+```
+Your app  ──►  Relay-E  ──►  LLM
+              ▲     │
+              │     ▼
+        Customer data (your DB / API / MCP)
+```
+
+Three things happen between request and response:
+
+1. **Context Resolver** fetches what the model needs — user profile, recent activity, RAG hits, real-time data — in parallel, trimmed to a token budget.
+2. **Agent loop** lets the model call tools (your domain functions) iteratively until done.
+3. **Usage accounting** records tokens in/out, cache hits, and USD per turn into Postgres.
+
+You define **skills** (a system prompt + a set of tools + a preferred model tier) and Relay-E orchestrates the rest.
+
+## Who it's for
+
+| If you're… | Relay-E gives you… |
+|---|---|
+| A SaaS adding an AI feature | The agentic backbone — pull the Docker image, point it at your data |
+| A team building an internal copilot | Skills + tools registry without inventing your own |
+| Anyone with multi-tenant LLM cost concerns | Per-tenant budgets, prompt caching, model routing, audit logs |
+| A regulated industry | Self-hosted, no data leaves your VPC, full audit trail |
+
+If you're building a **single-purpose** chatbot for one app and you're fine being locked to one LLM provider — a thin SDK wrapper is enough. Relay-E starts to pay off when you have multiple skills, multiple data sources, multi-tenancy, or production-grade observability needs.
+
+## How it differs
+
+| | LangChain / LangGraph | Vercel AI SDK | **Relay-E** |
+|---|---|---|---|
+| Layer | App-level orchestration library | Provider abstraction | Standalone server |
+| Multi-tenant | Bring your own | Bring your own | Built-in |
+| Skills + tools registry | Bring your own | Bring your own | Built-in |
+| OpenAPI for the chat surface | No | No | Auto-generated |
+| Cost / token attribution | Bring your own | Per-call | Per-tenant + per-session in Postgres |
+| Self-hosted Docker | Bring your own | N/A | Single image |
+
+Relay-E uses the Vercel AI SDK underneath for the actual provider calls — so you get its streaming and tool-calling primitives, plus everything above.
+
+## Where to go next
+
+<Cards>
+  <Card title="Quickstart" href="/docs/get-started/quickstart" description="Get the engine running in 5 minutes." />
+  <Card title="Architecture" href="/docs/get-started/architecture" description="The full diagram, layer by layer." />
+  <Card title="Concepts → Skills" href="/docs/concepts/skills" description="The unit of capability you ship to your users." />
+</Cards>

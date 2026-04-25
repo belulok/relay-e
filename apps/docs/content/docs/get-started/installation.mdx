@@ -1,0 +1,107 @@
+---
+title: Installation
+description: Get Relay-E running locally — Docker for the stack, npm for the engine.
+---
+
+## Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| Node | 22+ | Engine runtime (`.nvmrc` pins this) |
+| npm | 10+ | Workspace manager |
+| Docker | recent | Postgres + Redis (and optionally Ollama) |
+| At least one LLM key | — | OpenRouter (one key, 100+ models) is the simplest |
+
+## Clone and install
+
+```bash
+git clone https://github.com/belulok/relay-e.git
+cd relay-e
+nvm use            # picks Node 22 from .nvmrc
+npm install
+cp .env.example .env
+```
+
+## Configure providers
+
+Open `.env` and set **at least one** of these:
+
+```bash title=".env"
+OPENROUTER_API_KEY=sk-or-v1-...     # recommended: one key, 100+ models
+ANTHROPIC_API_KEY=sk-ant-...         # direct, lowest latency for Claude
+OPENAI_API_KEY=sk-...                # direct, GPT models
+OLLAMA_BASE_URL=http://localhost:11434  # offline, see below
+```
+
+Also set the dev API key (this protects all `/v1` endpoints):
+
+```bash title=".env"
+DEV_API_KEY=sk_dev_change_me
+```
+
+## Boot the local stack
+
+```bash
+npm run stack:up                         # Postgres + pgvector + Redis
+docker compose --profile local-llm up -d # optional: also boot Ollama
+```
+
+Apply the database schema:
+
+```bash
+npm run db:generate
+npm run db:migrate
+```
+
+## Run the engine
+
+In one terminal:
+
+```bash
+npm run dev
+```
+
+The API is now at `http://localhost:3001`:
+
+- **Interactive docs (Scalar)**: [http://localhost:3001/docs](http://localhost:3001/docs)
+- **OpenAPI spec**: [http://localhost:3001/openapi.json](http://localhost:3001/openapi.json)
+- **Health**: [http://localhost:3001/health](http://localhost:3001/health)
+
+In a second terminal, start the queue worker (long-running agent runs and embedding jobs use this):
+
+```bash
+npm run worker
+```
+
+## Smoke test
+
+```bash
+# Discover available skills
+curl -s http://localhost:3001/v1/skills \
+  -H "Authorization: Bearer $DEV_API_KEY"
+
+# Send a real message (requires a provider key)
+curl -s -X POST http://localhost:3001/v1/sessions/demo/messages \
+  -H "Authorization: Bearer $DEV_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"How much did I spend on food last month?","skills":["financial-advisor"]}'
+```
+
+## Run via Docker (no clone)
+
+If you don't want to fork yet, pull the published image and run alongside your existing stack:
+
+```bash
+docker pull ghcr.io/belulok/relay-e:latest
+```
+
+See [Deployment → Docker](/docs/deployment/docker) for a complete `docker-compose.yml`.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `EADDRINUSE :3001` | Another process is using the port. Set `API_PORT=3002` in `.env`. |
+| `No LLM providers configured` | Set at least one of `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OLLAMA_BASE_URL`. |
+| Postgres connection refused | `docker ps` to confirm the container is running, then check `DATABASE_URL` matches. |
+| `pgvector` not found | The `pgvector/pgvector:pg16` image installs it. If you're using a vanilla Postgres, `CREATE EXTENSION vector;` manually. |
