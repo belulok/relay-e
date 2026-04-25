@@ -9,3 +9,4 @@ dist
 .redisdata
 .ollama
 coverage
+docs/openapi.json

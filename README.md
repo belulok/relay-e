@@ -173,6 +173,50 @@ docs/                 README assets (logo, diagrams)
 
 That's it — `/openapi.json` and `/docs` pick it up on the next request. The Zod schema is the single source of truth: validation, response typing, and OpenAPI shape all derive from it. **Do not** add JSDoc OpenAPI annotations on top — they drift, aren't type-checked, and duplicate the schema.
 
+## Testing
+
+Tests run on [Vitest](https://vitest.dev/) — native ESM, fast, Jest-compatible API.
+
+```bash
+npm test                # run all tests once
+npm run test:watch      # watch mode
+npm run test:cov        # coverage (text + html + lcov)
+npm run test:db         # also run database tests (requires test DB up)
+```
+
+Layers:
+
+| Layer | Where | What it covers |
+|---|---|---|
+| **Unit** | `packages/*/src/**/*.test.ts` | Pure functions: token math, errors, ids, registries, prompt builder. |
+| **Integration** | `packages/engine/src/**/*.test.ts` | Context Resolver across multiple sources; agent loop with `MockLanguageModelV1` from `ai/test`. |
+| **API** | `apps/api/src/**/*.test.ts` | Routes via `app.fetch(new Request(...))` — no port binding, no network. |
+| **Database** | `packages/db/src/**/*.test.ts` | Real Postgres + transaction rollback per test. Auto-skipped unless `RELAY_E_TEST_DB=1` and a test DB is reachable. |
+
+DB tests assume a separate test database. Quickest local setup:
+
+```bash
+docker exec relay-e-postgres psql -U postgres -c "CREATE DATABASE relay_e_test;"
+DATABASE_URL_TEST=postgres://postgres:postgres@localhost:5432/relay_e_test \
+  npm run db:migrate
+npm run test:db
+```
+
+## Postman / Bruno / Insomnia
+
+The OpenAPI spec is auto-generated at `/openapi.json`, so importing into any HTTP client is a single click — no codegen, no export step.
+
+**Postman**: `Import → Link → http://localhost:3001/openapi.json` → "Generate collection." Postman creates a collection with every endpoint, request body, and example. Re-import any time the API changes.
+
+**Bruno / Insomnia / Hoppscotch**: same pattern — they all import OpenAPI 3 directly.
+
+If you need an offline snapshot (CI artefact, sharing without running the server):
+
+```bash
+npm run dev                     # one terminal
+npm run openapi:export          # other terminal — writes docs/openapi.json
+```
+
 ## Versioning
 
 Semantic Versioning ([SemVer 2.0](https://semver.org/spec/v2.0.0.html)):

@@ -9,6 +9,16 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 
 ### Added
 
+- Vitest test suite covering four layers: unit (`@relay-e/shared`,
+  registries, prompt builder), integration (Context Resolver, agent loop
+  with `MockLanguageModelV1` from `ai/test`), API (Hono routes via
+  `app.fetch(new Request(...))` — no port binding), and database
+  (transaction-rollback pattern, opt-in via `RELAY_E_TEST_DB=1`). Total
+  37 tests pass in ~500ms.
+- CI test job with a `pgvector/pgvector:pg16` service container so DB
+  tests run on every PR.
+- `npm run openapi:export` — writes the live spec to `docs/openapi.json`
+  for offline Postman / Bruno / Insomnia imports.
 - `@relay-e/queue` package — BullMQ queues (`agent-runs`, `embeddings`,
   `scheduled`) with a separate worker process (`npm run worker`). Job
   processors are stubs; deeper wiring with the agent loop lands with the

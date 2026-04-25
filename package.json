@@ -42,7 +42,11 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
+    "test:db": "RELAY_E_TEST_DB=1 vitest run",
+    "openapi:export": "bash scripts/export-openapi.sh",
     "db:generate": "npm run generate -w @relay-e/db",
     "db:migrate": "npm run migrate -w @relay-e/db",
     "db:studio": "npm run studio -w @relay-e/db",
@@ -54,8 +58,10 @@
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "@vitest/coverage-v8": "^2.1.8",
     "tsx": "^4.19.2",
     "turbo": "^2.3.3",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }
