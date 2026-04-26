@@ -17,8 +17,9 @@ import {
   type ResolvedChatModel,
 } from "@relay-e/providers";
 import type { SkillDefinition } from "../skills/index.js";
-import type { ToolDefinition, ToolRegistry } from "../tools/index.js";
+import type { AnyToolDefinition, ToolRegistry } from "../tools/index.js";
 import type { ContextResolver, ContextBundle } from "../context/index.js";
+import type { ConnectorRegistry } from "../connectors/index.js";
 import type { AgentEvent, AgentEventEmitter } from "./events.js";
 import { allocateBudget, buildSystemPrompt } from "./prompt.js";
 
@@ -47,6 +48,11 @@ export interface AgentRunDeps {
   providers: ProviderRegistry;
   tools: ToolRegistry;
   context: ContextResolver;
+  /**
+   * Connector registry. Optional for backwards compatibility with tests
+   * that don't need connectors; production wiring always passes one in.
+   */
+  connectors?: ConnectorRegistry;
   logger?: Logger;
   emit?: AgentEventEmitter;
 }
@@ -93,15 +99,31 @@ export async function runAgent(
     tokenEstimate: contextBundle.totalTokenEstimate,
   });
 
-  // 3. Build the system prompt with cacheable structure (stable parts up front).
+  // 3. Resolve connectors for the active skills — they contribute tools AND
+  //    prompt context (DB schemas, API surfaces). This is what keeps the
+  //    engine domain-agnostic: connectors plug in your data, the LLM sees
+  //    the schema, and writes its own queries.
+  const connectorIds = unique(input.skills.flatMap((s) => s.connectorIds ?? []));
+  const connectorTools: AnyToolDefinition[] = deps.connectors
+    ? await deps.connectors.toolsFor(connectorIds)
+    : [];
+  const connectorContext = deps.connectors
+    ? await deps.connectors.promptContextFor(connectorIds)
+    : "";
+
+  // 4. Build the system prompt with cacheable structure (stable parts up front).
   const systemPrompt = buildSystemPrompt({
     skills: input.skills,
     context: contextBundle,
+    connectorContext,
   });
 
-  // 4. Pick the tools the skills declared. Validation happens via Zod inside `tool()`.
-  const toolNames = unique(input.skills.flatMap((s) => s.toolNames));
-  const toolDefs = deps.tools.pick(toolNames);
+  // 5. Combine connector-derived tools with any in-process tools the skills
+  //    explicitly declared. Connectors are the common path; `toolNames` is
+  //    a fallback for one-off tools that aren't worth a connector.
+  const explicitToolNames = unique(input.skills.flatMap((s) => s.toolNames ?? []));
+  const explicitTools = deps.tools.pick(explicitToolNames);
+  const toolDefs: AnyToolDefinition[] = [...connectorTools, ...explicitTools];
   const toolCalls: AgentRunResult["toolCalls"] = [];
 
   const aiTools: ToolSet = Object.fromEntries(

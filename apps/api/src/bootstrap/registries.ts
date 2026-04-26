@@ -1,107 +1,91 @@
+import { logger, approxTokenCount } from "@relay-e/shared";
 import { ProviderRegistry } from "@relay-e/providers";
 import {
+  ConnectorRegistry,
   ContextResolver,
   SkillRegistry,
   ToolRegistry,
   defineSkill,
-  defineTool,
 } from "@relay-e/engine";
-import { z } from "zod";
-import { approxTokenCount } from "@relay-e/shared";
+import { loadAppConfig } from "./config.js";
 
-// Single-process registries. Per-tenant overrides come from the DB later.
+/**
+ * Bootstrap the in-process registries from `relay-e.config.json`.
+ *
+ * The engine is domain-agnostic: zero hardcoded skills, zero hardcoded tools.
+ * Customers point Relay-E at their data via connectors (Postgres, MySQL,
+ * HTTP APIs, web search, ...), and skills compose those connectors with
+ * a system prompt. Everything is declarative and reload-safe.
+ *
+ * Roadmap: move config from JSON to Postgres so customers manage skills
+ * via API/UI without redeploying.
+ */
+
 export const providers = new ProviderRegistry();
 export const tools = new ToolRegistry();
 export const skills = new SkillRegistry();
+export const connectors = new ConnectorRegistry();
 
-// Example finance tools — these would normally be backed by an MCP server
-// or a connector to the customer's API. Hardcoded here to demonstrate the loop.
-tools.registerMany([
-  defineTool({
-    name: "get_balance",
-    description: "Return the current balance for a user's account.",
-    inputSchema: z.object({
-      account_id: z.string().describe("Account identifier"),
-    }),
-    execute: async ({ account_id }) => ({
-      account_id,
-      balance_usd: 4231.55,
-      currency: "USD",
-      as_of: new Date().toISOString(),
-    }),
-  }),
-  defineTool({
-    name: "analyze_spending",
-    description: "Summarise spending for a user across the last N days, grouped by category.",
-    inputSchema: z.object({
-      days: z.number().int().min(1).max(365).default(30),
-    }),
-    execute: async ({ days }) => ({
-      window_days: days,
-      total_usd: 1842.4,
-      categories: [
-        { name: "groceries", amount_usd: 612.18 },
-        { name: "dining", amount_usd: 421.05 },
-        { name: "transport", amount_usd: 318.7 },
-        { name: "subscriptions", amount_usd: 184.5 },
-        { name: "other", amount_usd: 305.97 },
-      ],
-    }),
-  }),
-  defineTool({
-    name: "transfer_funds",
-    description: "Transfer funds between two accounts. Requires human approval before executing.",
-    requiresApproval: true,
-    inputSchema: z.object({
-      from_account: z.string(),
-      to_account: z.string(),
-      amount_usd: z.number().positive(),
-      memo: z.string().optional(),
-    }),
-    execute: async (input) => ({
-      transfer_id: `xfer_${Math.random().toString(36).slice(2, 10)}`,
-      status: "pending_approval",
-      ...input,
-    }),
-  }),
-]);
+let bootstrapped = false;
 
-skills.register(
-  defineSkill({
-    name: "financial-advisor",
-    description:
-      "A finance assistant that can read balances, analyse spending and propose transfers.",
-    systemPrompt:
-      `You are a personal finance assistant for the user. Use the tools to fetch real ` +
-      `data. Never invent balances or transactions. When the user asks for an action ` +
-      `with side effects (transfers), explain what you are about to do and rely on the ` +
-      `approval flow before assuming it succeeded.`,
-    toolNames: ["get_balance", "analyze_spending", "transfer_funds"],
-    preferredTier: "balanced",
-    examples: [
-      {
-        input: "How much did I spend on food last month?",
-        output:
-          "Calling analyze_spending(days=30) and reporting the dining + groceries totals back to the user.",
-      },
-    ],
-  }),
-);
+export async function bootstrap(): Promise<void> {
+  if (bootstrapped) return;
+  bootstrapped = true;
 
-// Built-in context source: skill-defined static guidance. Real deployments add
-// vector search, profile fetchers, MCP-backed sources, etc.
+  const cfg = await loadAppConfig();
+
+  // 1. Connectors first — skills reference them by id.
+  for (const c of cfg.connectors) {
+    try {
+      // The discriminated union in the schema and the registry's switch
+      // line up by `type`; the cast is a TS limitation, not a runtime risk.
+      connectors.register(c as Parameters<typeof connectors.register>[0]);
+    } catch (err) {
+      logger.error({ id: c.id, type: c.type, err }, "connector_registration_failed");
+    }
+  }
+
+  // 2. Skills. No tools registered statically anymore — connectors generate
+  //    the tools the skill needs at runtime, based on its `connectorIds`.
+  for (const s of cfg.skills) {
+    try {
+      skills.register(
+        defineSkill({
+          name: s.name,
+          description: s.description,
+          systemPrompt: s.systemPrompt,
+          toolNames: s.toolNames,
+          connectorIds: s.connectorIds,
+          examples: s.examples,
+          preferredTier: s.preferredTier,
+        }),
+      );
+    } catch (err) {
+      logger.error({ name: s.name, err }, "skill_registration_failed");
+    }
+  }
+}
+
+// Always-on context source: a small guardrail block so the model knows
+// what behaviours are non-negotiable regardless of skill. Domain-specific
+// context belongs in connectors, not here.
 export const context = new ContextResolver([
   {
-    name: "skill_guardrails",
+    name: "core_guardrails",
     priority: 100,
-    fetch: async ({ skills: skillNames }) => {
-      const guardrails = skillNames.map((name) => `Skill "${name}" must respect tenant-scoped data.`).join("\n");
+    fetch: async () => {
+      const text =
+        "Hard rules:\n" +
+        "- For database connectors, write SQL only against the schema you were shown.\n" +
+        "- For HTTP connectors, only call paths described in the connector context.\n" +
+        "- Cite sources when you use web_search.\n" +
+        "- If a tool returns no useful data, tell the user — never invent.";
       return [
         {
-          source: "skill_guardrails",
+          source: "core_guardrails",
           priority: 100,
-          tokenEstimate: approxTokenCount(guardrails),
-          content: guardrails,
+          tokenEstimate: approxTokenCount(text),
+          content: text,
         },
       ];
     },

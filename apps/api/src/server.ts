@@ -8,6 +8,7 @@ import { authMiddleware } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/error.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { routeModules } from "./routes/index.js";
+import { bootstrap } from "./bootstrap/registries.js";
 
 const app = new OpenAPIHono();
 
@@ -58,6 +59,12 @@ app.onError(errorHandler);
 
 const port = Number(process.env.API_PORT ?? 3001);
 const hostname = process.env.API_HOST ?? "0.0.0.0";
+
+// Load skills + connectors from relay-e.config.json before accepting traffic.
+// If config loading fails for one entry, that entry is skipped and logged;
+// the server still boots so users can fix their config without losing the
+// rest of the engine.
+await bootstrap();
 
 serve({ fetch: app.fetch, port, hostname }, (info) => {
   appLogger.info(

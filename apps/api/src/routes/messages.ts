@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { childLogger, errors, ids } from "@relay-e/shared";
 import { runAgent, type AgentEvent } from "@relay-e/engine";
-import { context, providers, skills, tools } from "../bootstrap/registries.js";
+import { connectors, context, providers, skills, tools } from "../bootstrap/registries.js";
 import {
   SessionIdParam,
   ToolCallSchema,
@@ -75,7 +75,16 @@ export const messagesRoutes = new OpenAPIHono().openapi(SendMessageRoute, async 
   const { prompt, skills: skillNames, stream, modelKey } = c.req.valid("json");
 
   const log = childLogger({ requestId, sessionId, tenantId: tenant.tenantId });
-  const skillDefs = skills.resolve(skillNames ?? ["financial-advisor"]);
+  // Default to whichever skill was registered first when the caller didn't
+  // pick one. The bundled config ships with `general-assistant`; customers
+  // editing relay-e.config.json get whatever they put first.
+  const fallbackSkill = skills.list()[0]?.name;
+  const requestedSkills = skillNames && skillNames.length > 0
+    ? skillNames
+    : fallbackSkill
+      ? [fallbackSkill]
+      : [];
+  const skillDefs = skills.resolve(requestedSkills);
 
   const ac = new AbortController();
   c.req.raw.signal.addEventListener("abort", () => ac.abort());
@@ -90,7 +99,7 @@ export const messagesRoutes = new OpenAPIHono().openapi(SendMessageRoute, async 
       try {
         const result = await runAgent(
           { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
-          { providers, tools, context, logger: log, emit: send },
+          { providers, tools, context, connectors, logger: log, emit: send },
           ac.signal,
         );
         await sse.writeSSE({ event: "text", data: JSON.stringify({ text: result.text }) });
@@ -103,7 +112,7 @@ export const messagesRoutes = new OpenAPIHono().openapi(SendMessageRoute, async 
 
   const result = await runAgent(
     { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
-    { providers, tools, context, logger: log },
+    { providers, tools, context, connectors, logger: log },
     ac.signal,
   );
 

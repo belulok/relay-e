@@ -10,7 +10,20 @@ export interface SkillDefinition {
   name: string;
   description: string;
   systemPrompt: string;
-  toolNames: string[];
+  /**
+   * Tools the skill can call. Usually empty when `connectorIds` are set —
+   * the engine auto-derives tools from connectors. Use this only for
+   * one-off in-process tools registered manually.
+   */
+  toolNames?: string[];
+  /**
+   * Connectors this skill has access to. Each connector contributes
+   * tools (e.g. `query_<id>`, `call_<id>`, `web_search`) AND a prompt
+   * context block (DB schema, API surface) that the engine injects into
+   * the system prompt at request time. This is how the skill stays
+   * domain-agnostic — connectors do the domain plumbing.
+   */
+  connectorIds?: string[];
   examples?: SkillExample[];
   // Routing hint: which model tier the skill prefers.
   preferredTier?: "fast" | "balanced" | "premium";

@@ -5,6 +5,13 @@ import { renderContext } from "../context/index.js";
 export interface PromptInput {
   skills: SkillDefinition[];
   context: ContextBundle;
+  /**
+   * Connector context (DB schemas, API surfaces) rendered as Markdown.
+   * Built by `ConnectorRegistry.promptContextFor(skill.connectorIds)` and
+   * passed in by the agent loop. Empty string when the skill has no
+   * connectors.
+   */
+  connectorContext?: string;
   basePrompt?: string;
 }
 
@@ -14,7 +21,8 @@ export function buildSystemPrompt(input: PromptInput): string {
   parts.push(
     input.basePrompt ??
       `You are an AI assistant powered by Relay-E. Be helpful, accurate, and concise. ` +
-        `When you need information you do not have, call the available tools rather than guessing.`,
+        `When you need information you do not have, call the available tools rather than guessing. ` +
+        `For database connectors, write SQL based ONLY on the schema shown — never invent table or column names.`,
   );
 
   if (input.skills.length > 0) {
@@ -28,6 +36,11 @@ export function buildSystemPrompt(input: PromptInput): string {
         }
       }
     }
+  }
+
+  if (input.connectorContext && input.connectorContext.trim().length > 0) {
+    parts.push("# Connectors");
+    parts.push(input.connectorContext);
   }
 
   const ctx = renderContext(input.context);

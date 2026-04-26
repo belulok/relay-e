@@ -1,0 +1,86 @@
+{
+  "$schema": "./relay-e.config.schema.json",
+  "_comment": "Copy to relay-e.config.json and customize. Secrets stay in .env via ${ENV_VAR} substitution. Restart the API to pick up changes (skill-as-config from the DB lands later — see roadmap).",
+
+  "connectors": [
+    {
+      "_comment": "POSTGRES — connect to the customer's Postgres. Schema is introspected on boot and injected into the LLM prompt so the model knows what's queryable. Use a READ-ONLY DB role in production; the engine also enforces SELECT-only at the SQL layer as defense in depth.",
+      "type": "postgres",
+      "id": "shop_db",
+      "name": "Shop DB",
+      "config": {
+        "url": "${SHOP_DB_URL}",
+        "description": "Production e-commerce database (orders, customers, products).",
+        "schemas": ["public"],
+        "tableAllowlist": ["customers", "orders", "products", "order_items"],
+        "rowLimit": 200
+      }
+    },
+
+    {
+      "_comment": "MYSQL — same pattern, different driver. Run `npm install mysql2 -w @relay-e/engine` first.",
+      "type": "mysql",
+      "id": "analytics_db",
+      "name": "Analytics MySQL",
+      "config": {
+        "url": "${ANALYTICS_DB_URL}",
+        "description": "Read replica of the analytics warehouse.",
+        "rowLimit": 500
+      }
+    },
+
+    {
+      "_comment": "HTTP — wrap any REST API behind one base URL. If you supply openApiUrl, the engine pulls the spec on boot and surfaces every endpoint to the LLM in the prompt — model writes its own calls.",
+      "type": "http",
+      "id": "stripe",
+      "name": "Stripe",
+      "config": {
+        "baseUrl": "https://api.stripe.com/v1",
+        "description": "Stripe API for billing and customer lookups.",
+        "auth": { "type": "bearer", "tokenEnv": "STRIPE_SECRET_KEY" },
+        "endpoints": [
+          { "method": "GET", "path": "/customers/{id}", "summary": "Retrieve a customer" },
+          { "method": "GET", "path": "/charges", "summary": "List charges" }
+        ]
+      }
+    },
+
+    {
+      "_comment": "WEB SEARCH — Tavily / Brave / Serper. Gives the LLM the ability to look up current information.",
+      "type": "websearch",
+      "id": "web",
+      "name": "Web Search",
+      "config": {
+        "provider": "tavily",
+        "apiKeyEnv": "TAVILY_API_KEY",
+        "maxResults": 5
+      }
+    }
+  ],
+
+  "skills": [
+    {
+      "name": "shop-assistant",
+      "description": "Customer support for the e-commerce shop. Looks up orders in the DB, calls Stripe for billing, falls back to web search for general questions.",
+      "systemPrompt": "You are the shop's support assistant. Answer questions about orders, customers, and billing using the connectors below. For order/customer questions, query the shop_db. For billing/refunds, use Stripe. For anything outside our system (return policies of competitors, current shipping carrier news), use web_search and cite the URL. Never invent data — if a tool returns nothing, say so.",
+      "connectorIds": ["shop_db", "stripe", "web"],
+      "preferredTier": "balanced"
+    },
+
+    {
+      "name": "analyst",
+      "description": "Data analyst that answers ad-hoc questions over the analytics warehouse.",
+      "systemPrompt": "You are a senior data analyst. The user will ask questions about the business. Write SQL against the analytics_db connector to answer them — start by exploring the schema if you're unsure. Always show your reasoning briefly, then the answer with key numbers.",
+      "connectorIds": ["analytics_db"],
+      "preferredTier": "premium"
+    },
+
+    {
+      "name": "general-assistant",
+      "description": "Default helpful assistant with web search.",
+      "systemPrompt": "You are a helpful general-purpose assistant. Use web_search for anything that requires current information.",
+      "connectorIds": ["web"],
+      "preferredTier": "fast"
+    }
+  ]
+}
