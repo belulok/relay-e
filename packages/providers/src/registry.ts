@@ -94,6 +94,64 @@ export const CHAT_MODELS: Record<string, ChatModelDescriptor> = {
     tier: "fast",
   },
 
+  // --- MiniMax ---
+  "minimax:MiniMax-Text-01": {
+    provider: "minimax",
+    id: "MiniMax-Text-01",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 1_000_000,
+    tier: "balanced",
+  },
+  "minimax:MiniMax-M1": {
+    provider: "minimax",
+    id: "MiniMax-M1",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 1_000_000,
+    tier: "premium",
+  },
+
+  // --- Kimi (Moonshot AI) ---
+  "moonshot:moonshot-v1-8k": {
+    provider: "moonshot",
+    id: "moonshot-v1-8k",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 8_000,
+    tier: "fast",
+  },
+  "moonshot:moonshot-v1-32k": {
+    provider: "moonshot",
+    id: "moonshot-v1-32k",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 32_000,
+    tier: "balanced",
+  },
+  "moonshot:moonshot-v1-128k": {
+    provider: "moonshot",
+    id: "moonshot-v1-128k",
+    modalities: ["text"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 128_000,
+    tier: "premium",
+  },
+  "moonshot:kimi-latest": {
+    provider: "moonshot",
+    id: "kimi-latest",
+    modalities: ["text", "image"],
+    supportsTools: true,
+    supportsCaching: false,
+    contextWindow: 128_000,
+    tier: "balanced",
+  },
+
   // --- Ollama (local, optional) ---
   "ollama:llama3.2": {
     provider: "ollama",
@@ -122,6 +180,8 @@ export interface ProviderRegistryOptions {
   openaiApiKey?: string;
   openrouterApiKey?: string;
   ollamaBaseUrl?: string;
+  minimaxApiKey?: string;
+  moonshotApiKey?: string;
 }
 
 export class ProviderRegistry {
@@ -129,6 +189,8 @@ export class ProviderRegistry {
   private openai?: ReturnType<typeof createOpenAI>;
   private openrouter?: ReturnType<typeof createOpenAI>;
   private ollama?: ReturnType<typeof createOllama>;
+  private minimax?: ReturnType<typeof createOpenAI>;
+  private moonshot?: ReturnType<typeof createOpenAI>;
 
   constructor(opts: ProviderRegistryOptions = {}) {
     const anthropicKey = opts.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY;
@@ -149,6 +211,24 @@ export class ProviderRegistry {
 
     const ollamaBase = opts.ollamaBaseUrl ?? process.env.OLLAMA_BASE_URL;
     if (ollamaBase) this.ollama = createOllama({ baseURL: `${ollamaBase}/api` });
+
+    const minimaxKey = opts.minimaxApiKey ?? process.env.MINIMAX_API_KEY;
+    if (minimaxKey) {
+      this.minimax = createOpenAI({
+        apiKey: minimaxKey,
+        baseURL: "https://api.minimax.chat/v1",
+        compatibility: "compatible",
+      });
+    }
+
+    const moonshotKey = opts.moonshotApiKey ?? process.env.MOONSHOT_API_KEY;
+    if (moonshotKey) {
+      this.moonshot = createOpenAI({
+        apiKey: moonshotKey,
+        baseURL: "https://api.moonshot.cn/v1",
+        compatibility: "compatible",
+      });
+    }
   }
 
   chat(key: string): ResolvedChatModel {
@@ -193,6 +273,12 @@ export class ProviderRegistry {
       case "ollama":
         if (!this.ollama) throw errors.provider("Ollama not configured (OLLAMA_BASE_URL missing)");
         return this.ollama;
+      case "minimax":
+        if (!this.minimax) throw errors.provider("MiniMax not configured (MINIMAX_API_KEY missing)");
+        return this.minimax;
+      case "moonshot":
+        if (!this.moonshot) throw errors.provider("Moonshot (Kimi) not configured (MOONSHOT_API_KEY missing)");
+        return this.moonshot;
       default:
         throw errors.provider(`Provider "${id}" not yet supported`);
     }
@@ -221,9 +307,19 @@ export class ProviderRegistry {
     if (this.openai) {
       return tier === "fast" ? "gpt-4o-mini" : "gpt-4o";
     }
+    if (this.minimax) {
+      return tier === "premium" ? "minimax:MiniMax-M1" : "minimax:MiniMax-Text-01";
+    }
+    if (this.moonshot) {
+      switch (tier) {
+        case "fast":    return "moonshot:moonshot-v1-8k";
+        case "balanced": return "moonshot:moonshot-v1-32k";
+        case "premium":  return "moonshot:moonshot-v1-128k";
+      }
+    }
     if (this.ollama) return "ollama:llama3.2";
     throw errors.provider(
-      "No LLM providers configured — set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL.",
+      "No LLM providers configured — set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, MINIMAX_API_KEY, MOONSHOT_API_KEY, or OLLAMA_BASE_URL.",
     );
   }
 }
