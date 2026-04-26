@@ -4,6 +4,8 @@ import { childLogger, errors, ids } from "@relay-e/shared";
 import { runAgent, type AgentEvent } from "@relay-e/engine";
 import { context, providers, tools } from "../bootstrap/registries.js";
 import { getTenantBundle, tenantConnectorSource } from "../bootstrap/tenant-registry.js";
+import { ensureSession, persistTurn, persistFailedRun } from "../bootstrap/run-repo.js";
+import { quotaMiddleware, invalidateUsageCache } from "../middleware/quota.js";
 import {
   SessionIdParam,
   ToolCallSchema,
@@ -69,66 +71,120 @@ const SendMessageRoute = createRoute({
   },
 });
 
-export const messagesRoutes = new OpenAPIHono().openapi(SendMessageRoute, async (c) => {
-  const tenant = c.get("tenant");
-  const requestId = c.get("requestId");
-  const { id: sessionId } = c.req.valid("param");
-  const { prompt, skills: skillNames, stream, modelKey } = c.req.valid("json");
+const _app = new OpenAPIHono();
+// Quota check runs before every handler in this sub-app, after auth sets tenant context.
+_app.use("*", quotaMiddleware);
+export const messagesRoutes = _app.openapi(SendMessageRoute, async (c) => {
+    const tenant = c.get("tenant");
+    const requestId = c.get("requestId");
+    const { id: sessionKey } = c.req.valid("param");
+    const { prompt, skills: skillNames, stream, modelKey } = c.req.valid("json");
 
-  const log = childLogger({ requestId, sessionId, tenantId: tenant.tenantId });
+    const log = childLogger({ requestId, sessionId: sessionKey, tenantId: tenant.tenantId });
 
-  // Resolve the per-tenant bundle: combines JSON globals (system-wide) with
-  // DB rows registered via /v1/connectors and /v1/tenant-skills.
-  const bundle = await getTenantBundle(tenant.tenantId);
-  const fallbackSkill = bundle.skills.list()[0]?.name;
-  const requestedSkills = skillNames && skillNames.length > 0
-    ? skillNames
-    : fallbackSkill
-      ? [fallbackSkill]
-      : [];
-  const skillDefs = bundle.skills.resolve(requestedSkills);
-  const connectorSource = tenantConnectorSource(bundle);
+    // Resolve the per-tenant bundle: JSON globals + DB rows from /v1/connectors + /v1/skills.
+    const bundle = await getTenantBundle(tenant.tenantId);
+    const fallbackSkill = bundle.skills.list()[0]?.name;
+    const requestedSkills = skillNames && skillNames.length > 0
+      ? skillNames
+      : fallbackSkill
+        ? [fallbackSkill]
+        : [];
+    const skillDefs = bundle.skills.resolve(requestedSkills);
+    const skillIds = skillDefs.map((s) => s.name);
+    const connectorSource = tenantConnectorSource(bundle);
 
-  const ac = new AbortController();
-  c.req.raw.signal.addEventListener("abort", () => ac.abort());
+    // Ensure the session row exists before inserting messages that FK into it.
+    const sessionId = await ensureSession(tenant.tenantId, sessionKey, skillIds);
 
-  const runId = ids.run();
+    const ac = new AbortController();
+    c.req.raw.signal.addEventListener("abort", () => ac.abort());
 
-  if (stream) {
-    return streamSSE(c, async (sse) => {
-      const send = async (event: AgentEvent) => {
-        await sse.writeSSE({ event: event.type, data: JSON.stringify(event) });
-      };
-      try {
-        const result = await runAgent(
-          { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
-          { providers, tools, context, connectors: connectorSource, logger: log, emit: send },
-          ac.signal,
-        );
-        await sse.writeSSE({ event: "text", data: JSON.stringify({ text: result.text }) });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "agent_failed";
-        await sse.writeSSE({ event: "error", data: JSON.stringify({ message }) });
-      }
+    const runId = ids.run();
+    const startedAt = new Date();
+
+    if (stream) {
+      return streamSSE(c, async (sse) => {
+        const send = async (event: AgentEvent) => {
+          await sse.writeSSE({ event: event.type, data: JSON.stringify(event) });
+        };
+        let result;
+        try {
+          result = await runAgent(
+            { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
+            { providers, tools, context, connectors: connectorSource, logger: log, emit: send },
+            ac.signal,
+          );
+          await sse.writeSSE({ event: "text", data: JSON.stringify({ text: result.text }) });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "agent_failed";
+          await sse.writeSSE({ event: "error", data: JSON.stringify({ message }) });
+          persistFailedRun({ tenantId: tenant.tenantId, sessionId, prompt, skillIds, startedAt, error: message })
+            .catch((e) => log.error(e, "persist_failed_run_error"));
+          return;
+        }
+        // Fire-and-forget — response is already streaming, don't block it
+        const resolvedModel = modelKey ?? "routed";
+        persistTurn({
+          tenantId: tenant.tenantId,
+          sessionId,
+          prompt,
+          responseText: result.text,
+          toolCalls: result.toolCalls,
+          usage: result.usage,
+          modelKey: resolvedModel,
+          skillIds,
+          steps: result.steps,
+          finishReason: result.finishReason,
+          startedAt,
+        })
+          .then(() => invalidateUsageCache(tenant.tenantId))
+          .catch((e) => log.error(e, "persist_turn_failed"));
+      });
+    }
+
+    let result;
+    try {
+      result = await runAgent(
+        { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
+        { providers, tools, context, connectors: connectorSource, logger: log },
+        ac.signal,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "agent_failed";
+      persistFailedRun({ tenantId: tenant.tenantId, sessionId, prompt, skillIds, startedAt, error: message })
+        .catch((e) => log.error(e, "persist_failed_run_error"));
+      throw errors.internal(message);
+    }
+
+    if (!result) throw errors.internal("agent_returned_no_result");
+
+    const resolvedModel = modelKey ?? "unknown";
+    // Fire-and-forget — return the JSON response without waiting for DB writes
+    persistTurn({
+      tenantId: tenant.tenantId,
+      sessionId,
+      prompt,
+      responseText: result.text,
+      toolCalls: result.toolCalls,
+      usage: result.usage,
+      modelKey: resolvedModel,
+      skillIds,
+      steps: result.steps,
+      finishReason: result.finishReason,
+      startedAt,
+    })
+      .then(() => invalidateUsageCache(tenant.tenantId))
+      .catch((e) => log.error(e, "persist_turn_failed"));
+
+    return c.json({
+      id: ids.message(),
+      session_id: sessionKey,
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: result.text }],
+      usage: result.usage,
+      finish_reason: result.finishReason,
+      tool_calls: result.toolCalls,
+      context: { sources: result.context.items.map((i) => i.source) },
     });
-  }
-
-  const result = await runAgent(
-    { tenantId: tenant.tenantId, sessionId, runId, prompt, skills: skillDefs, modelKey },
-    { providers, tools, context, connectors: connectorSource, logger: log },
-    ac.signal,
-  );
-
-  if (!result) throw errors.internal("agent_returned_no_result");
-
-  return c.json({
-    id: ids.message(),
-    session_id: sessionId,
-    role: "assistant" as const,
-    content: [{ type: "text" as const, text: result.text }],
-    usage: result.usage,
-    finish_reason: result.finishReason,
-    tool_calls: result.toolCalls,
-    context: { sources: result.context.items.map((i) => i.source) },
   });
-});

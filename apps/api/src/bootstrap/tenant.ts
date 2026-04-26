@@ -1,22 +1,19 @@
 import { eq } from "drizzle-orm";
 import { getDb, tenants, type Tenant } from "@relay-e/db";
 
-/**
- * Resolve the auth-time tenant identifier (a string from the API key) into
- * a real `tenants` row. For dev mode the key maps to a single
- * `name = "dev-tenant"` row that's auto-created on first hit. Production
- * deployments will replace this with a per-key lookup.
- */
-const cache = new Map<string, Tenant>();
+const byName = new Map<string, Tenant>();
+const byId = new Map<string, Tenant>();
 
+/** Resolve a tenant by **name** (creates it if missing). Used for dev-mode bootstrap. */
 export async function resolveTenant(name: string): Promise<Tenant> {
-  const cached = cache.get(name);
+  const cached = byName.get(name);
   if (cached) return cached;
 
   const db = getDb();
   const existing = await db.select().from(tenants).where(eq(tenants.name, name)).limit(1);
   if (existing[0]) {
-    cache.set(name, existing[0]);
+    byName.set(name, existing[0]);
+    byId.set(existing[0].id, existing[0]);
     return existing[0];
   }
 
@@ -25,10 +22,25 @@ export async function resolveTenant(name: string): Promise<Tenant> {
     .values({ name, plan: "free" })
     .returning();
   if (!created) throw new Error("failed_to_create_tenant");
-  cache.set(name, created);
+  byName.set(name, created);
+  byId.set(created.id, created);
   return created;
 }
 
+/** Resolve a tenant by **UUID** (throws if not found). Used after API-key auth. */
+export async function resolveTenantById(id: string): Promise<Tenant> {
+  const cached = byId.get(id);
+  if (cached) return cached;
+
+  const db = getDb();
+  const rows = await db.select().from(tenants).where(eq(tenants.id, id)).limit(1);
+  if (!rows[0]) throw new Error(`tenant_not_found:${id}`);
+  byId.set(id, rows[0]);
+  byName.set(rows[0].name, rows[0]);
+  return rows[0];
+}
+
 export function clearTenantCache(): void {
-  cache.clear();
+  byName.clear();
+  byId.clear();
 }

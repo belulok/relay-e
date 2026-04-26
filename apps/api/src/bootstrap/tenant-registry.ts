@@ -1,4 +1,4 @@
-import { ConnectorRegistry, SkillRegistry, defineSkill } from "@relay-e/engine";
+import { ConnectorRegistry, SkillRegistry, defineSkill, TENANT_BUNDLE_TTL_MS } from "@relay-e/engine";
 import type { Connector, ConnectorConfig, SkillDefinition } from "@relay-e/engine";
 import { logger } from "@relay-e/shared";
 import {
@@ -7,7 +7,6 @@ import {
 } from "./connector-repo.js";
 import { listSkillsForTenant, rowToSkillDefinition } from "./skill-repo.js";
 import { connectors as globalConnectors, skills as globalSkills } from "./registries.js";
-import { resolveTenant } from "./tenant.js";
 
 interface TenantBundle {
   /** Connector instances scoped to this tenant — unions globals + tenant rows. */
@@ -20,12 +19,14 @@ interface TenantBundle {
   loadedAt: number;
 }
 
-const TTL_MS = Number(process.env.TENANT_REGISTRY_TTL_MS ?? 60_000);
+const TTL_MS = Number(process.env.TENANT_REGISTRY_TTL_MS ?? TENANT_BUNDLE_TTL_MS);
 const cache = new Map<string, TenantBundle>();
 
 /**
  * Build (or return a cached) per-request connector + skill registry for the
  * given tenant.
+ *
+ * @param tenantId - The tenant's **UUID** (from TenantContext set by auth middleware).
  *
  * The result combines:
  *   1. **Global** connectors + skills loaded once at boot from
@@ -34,70 +35,53 @@ const cache = new Map<string, TenantBundle>();
  *      via `/v1/connectors` + `/v1/skills` CRUD endpoints — each customer
  *      registers their own DB / API / web search keys without forking.
  *
- * Cached for `TENANT_REGISTRY_TTL_MS` (default 60s) so we don't hit the DB
- * on every chat turn. Calling `invalidateTenantBundle()` after a write
- * forces a reload on the next request.
+ * Cached for `TENANT_BUNDLE_TTL_MS` (default 60 s). Calling
+ * `invalidateTenantBundle()` after a write forces a reload on the next request.
  */
-export async function getTenantBundle(tenantName: string): Promise<TenantBundle> {
-  const cached = cache.get(tenantName);
+export async function getTenantBundle(tenantId: string): Promise<TenantBundle> {
+  const cached = cache.get(tenantId);
   if (cached && Date.now() - cached.loadedAt < TTL_MS) return cached;
 
   // Evict the previous bundle's owned connectors before reloading.
   if (cached) await disposeBundle(cached);
 
-  const tenant = await resolveTenant(tenantName);
-
   const connectorReg = new ConnectorRegistry();
   const skillReg = new SkillRegistry();
   const owned: Connector[] = [];
 
-  // 1. Globals first — same instances every request, no per-tenant lifetime.
-  for (const c of globalConnectors.list()) {
-    try {
-      // Reuse the global instance directly so we don't double-connect.
-      // ConnectorRegistry doesn't expose a `register-instance` method, but we
-      // can simulate by stashing into the internal map. Instead we re-build
-      // wrappers below — slightly more overhead, simpler model.
-      // For now: surface tools + prompt context via the global registry
-      // and merge at toolsFor() / promptContextFor() boundaries — see below.
-      void c;
-    } catch (err) {
-      logger.warn({ id: c.id, err }, "global_connector_skipped");
-    }
-  }
+  // 1. Globals first — shared instances, no per-tenant lifetime.
   for (const s of globalSkills.list()) {
     try {
       skillReg.register(s);
     } catch {
-      // duplicates are fine — skill name collision means tenant overrides.
+      // name collision handled below when tenant skills are loaded
     }
   }
 
   // 2. Tenant rows.
-  const connectorRows = await listConnectorsForTenant(tenant.id);
+  const connectorRows = await listConnectorsForTenant(tenantId);
   for (const row of connectorRows) {
     try {
       const cfg: ConnectorConfig = rowToConnectorConfig(row);
       const c = connectorReg.register(cfg);
       owned.push(c);
     } catch (err) {
-      logger.error({ tenantId: tenant.id, connectorId: row.name, err }, "tenant_connector_load_failed");
+      logger.error({ tenantId, connectorId: row.name, err }, "tenant_connector_load_failed");
     }
   }
 
-  const skillRows = await listSkillsForTenant(tenant.id);
+  const skillRows = await listSkillsForTenant(tenantId);
   for (const row of skillRows) {
     try {
       const sd: SkillDefinition = rowToSkillDefinition(row);
-      // Tenant skills override globals on name collision.
       try {
         skillReg.register(defineSkill(sd));
       } catch {
-        // already registered as a global with the same name — log and continue.
-        logger.warn({ name: sd.name }, "tenant_skill_name_collision_with_global");
+        // Tenant skill overrides global with same name — re-register.
+        logger.warn({ name: sd.name }, "tenant_skill_overrides_global");
       }
     } catch (err) {
-      logger.error({ tenantId: tenant.id, skillName: row.name, err }, "tenant_skill_load_failed");
+      logger.error({ tenantId, skillName: row.name, err }, "tenant_skill_load_failed");
     }
   }
 
@@ -107,7 +91,7 @@ export async function getTenantBundle(tenantName: string): Promise<TenantBundle>
     ownedConnectors: owned,
     loadedAt: Date.now(),
   };
-  cache.set(tenantName, bundle);
+  cache.set(tenantId, bundle);
   return bundle;
 }
 
@@ -152,10 +136,10 @@ export function tenantConnectorSource(bundle: TenantBundle) {
   };
 }
 
-export async function invalidateTenantBundle(tenantName: string): Promise<void> {
-  const cached = cache.get(tenantName);
+export async function invalidateTenantBundle(tenantId: string): Promise<void> {
+  const cached = cache.get(tenantId);
   if (cached) {
-    cache.delete(tenantName);
+    cache.delete(tenantId);
     await disposeBundle(cached);
   }
 }

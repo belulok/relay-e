@@ -1,11 +1,13 @@
 ---
-title: GET /v1/skills, /v1/tools
-description: Introspection endpoints — list what's registered.
+title: GET /v1/skills, /v1/tools — and skill CRUD
+description: Introspect registered skills and tools, and manage per-tenant skills via POST / DELETE.
 ---
 
-Two introspection endpoints to discover the engine's capabilities at runtime.
+`/v1/skills` and `/v1/tools` are introspection + management endpoints. Skills are the unit of capability you expose to users; tools are the individual functions the LLM can call.
 
 ## List skills
+
+Returns all skills visible to the calling tenant — global skills (registered at boot) merged with the tenant's own DB-stored skills.
 
 ```http
 GET /v1/skills
@@ -18,16 +20,76 @@ Response:
 {
   "data": [
     {
-      "name": "financial-advisor",
-      "description": "Reads balances, analyses spending, proposes transfers.",
-      "tools": ["get_balance", "analyze_spending", "transfer_funds"],
-      "preferred_tier": "balanced"
+      "id": null,
+      "name": "weather-bot",
+      "description": "Answers questions about current weather.",
+      "systemPrompt": "You are a helpful weather assistant.",
+      "toolNames": ["get_weather"],
+      "connectorIds": [],
+      "preferredTier": "fast",
+      "source": "global"
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "shop-support",
+      "description": "First-line shop support agent.",
+      "systemPrompt": "You are a customer support agent...",
+      "toolNames": [],
+      "connectorIds": ["shop_db", "stripe"],
+      "preferredTier": "balanced",
+      "source": "tenant"
     }
   ]
 }
 ```
 
+Field notes:
+
+| Field | Description |
+|---|---|
+| `id` | UUID for tenant-stored skills; `null` for global (boot-registered) skills |
+| `source` | `"global"` — registered in code at startup; `"tenant"` — stored in DB via API |
+| `toolNames` | Explicit tools registered for this skill |
+| `connectorIds` | Connector IDs whose tools are also available to this skill |
+| `preferredTier` | `"fast"` / `"balanced"` / `"premium"` — guides model routing |
+
+## Create a tenant skill
+
+Store a new skill in the DB. It becomes immediately visible on the next `GET /v1/skills` or agent turn (tenant bundle is cached for 60 s and invalidated on every write).
+
+```http
+POST /v1/skills
+Authorization: Bearer <api-key>
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "shop-support",
+  "description": "First-line shop support agent",
+  "systemPrompt": "You are a customer support agent for an e-commerce shop. Use query_shop_db for order and customer lookups. Never invent data.",
+  "connectorIds": ["shop_db"],
+  "toolNames": [],
+  "preferredTier": "balanced"
+}
+```
+
+Response: `201` with the created skill row including its `id`.
+
+`name` is the idempotent key — POSTing the same name updates the existing row.
+
+## Delete a tenant skill
+
+```http
+DELETE /v1/skills/{id}
+Authorization: Bearer <api-key>
+```
+
+Hard-deletes the DB row. Global skills (registered in code) cannot be deleted via API — remove them from `registries.ts` instead.
+
 ## List tools
+
+Returns all tools visible to the tenant — explicit tools (registered at boot or via tenant skills) plus connector-derived tools (`query_<id>`, `call_<id>`, etc.).
 
 ```http
 GET /v1/tools
@@ -40,26 +102,29 @@ Response:
 {
   "data": [
     {
-      "name": "get_balance",
-      "description": "Return the current balance for a user's account.",
+      "name": "get_weather",
+      "description": "Return current weather for a city.",
       "requires_approval": false
     },
     {
       "name": "transfer_funds",
-      "description": "Transfer funds between two accounts. Requires human approval.",
+      "description": "Transfer funds between two accounts.",
       "requires_approval": true
+    },
+    {
+      "name": "query_shop_db",
+      "description": "Run a read-only SELECT query against Shop DB.",
+      "requires_approval": false
     }
   ]
 }
 ```
 
+Tool input schemas are not currently included here — they're in `/openapi.json` under `components.schemas`. Roadmap: surface the Zod input schema per tool in this endpoint too.
+
 ## Why bother
 
-These are useful when:
-
-- Your frontend renders a "what can this assistant do?" list.
-- You want to validate, before sending, that the skill name your code is using exists.
-- You're building an admin UI to inspect a deployment.
-- You're writing eval harnesses that need to enumerate skills.
-
-Tool input schemas are not currently exposed by these endpoints (they're in the OpenAPI spec under `components.schemas.SendMessageBody` and the per-tool schemas in `/openapi.json`). Roadmap: include the input JSON schema per tool here too.
+- Frontend renders a "what can this assistant do?" list.
+- Validate, before sending, that the skill name your code uses actually exists.
+- Build an admin UI to inspect a live deployment.
+- Write eval harnesses that enumerate all available skills.

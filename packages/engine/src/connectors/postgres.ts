@@ -1,42 +1,35 @@
 import postgres, { type Sql } from "postgres";
-import { z } from "zod";
 import { errors } from "@relay-e/shared";
-import { defineTool, type AnyToolDefinition } from "../tools/index.js";
 import { resolveEnvString } from "./env.js";
-import { validateSelectSql } from "./sql-safety.js";
-import type { Connector, PostgresConnectorConfig } from "./types.js";
-
-interface SchemaTable {
-  schema: string;
-  table: string;
-  columns: { name: string; type: string; nullable: boolean }[];
-}
+import { SqlConnectorBase, type SchemaTable } from "./sql-base.js";
+import type { PostgresConnectorConfig } from "./types.js";
+import { POSTGRES_MAX_CONNECTIONS, SQL_DEFAULT_ROW_LIMIT, CONNECTOR_STATEMENT_TIMEOUT_MS } from "../constants.js";
 
 /**
  * Postgres connector. On creation:
  *
  *   1. Connects with a (recommended) read-only role.
- *   2. Introspects information_schema for tables + columns.
+ *   2. Introspects information_schema for tables + columns on first query.
  *   3. Caches the schema for prompt injection.
  *
- * Exposes one tool: `query_database`. The LLM writes SQL against the schema
+ * Exposes one tool: `query_{id}`. The LLM writes SQL against the schema
  * we surface in the system prompt; we validate (read-only, no multi-statement,
  * LIMIT enforced) before executing.
  */
-export class PostgresConnector implements Connector {
+export class PostgresConnector extends SqlConnectorBase {
   readonly type = "postgres" as const;
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string;
 
-  private readonly cfg: PostgresConnectorConfig;
   private readonly sql: Sql;
-  private schemaCache?: SchemaTable[];
+  private readonly cfg: PostgresConnectorConfig;
 
   constructor(id: string, name: string, cfg: PostgresConnectorConfig) {
-    this.id = id;
-    this.name = name;
-    this.description = cfg.description;
+    super(
+      id,
+      name,
+      cfg.description,
+      cfg.rowLimit ?? SQL_DEFAULT_ROW_LIMIT,
+      cfg.tableAllowlist,
+    );
     this.cfg = cfg;
 
     const url = resolveEnvString(cfg.url);
@@ -48,20 +41,15 @@ export class PostgresConnector implements Connector {
     }
 
     this.sql = postgres(url, {
-      max: cfg.maxConnections ?? 5,
+      max: cfg.maxConnections ?? POSTGRES_MAX_CONNECTIONS,
       prepare: false,
-      // Default statement timeout protects against runaway model-written queries.
-      connection: { statement_timeout: 30_000 },
+      connection: { statement_timeout: CONNECTOR_STATEMENT_TIMEOUT_MS },
       onnotice: () => {},
     });
   }
 
-  /** Discover tables + columns. Cached after the first call. */
-  async getSchema(): Promise<SchemaTable[]> {
-    if (this.schemaCache) return this.schemaCache;
-
+  protected async introspectSchema(): Promise<SchemaTable[]> {
     const schemas = this.cfg.schemas ?? ["public"];
-    const allowlist = this.cfg.tableAllowlist;
 
     type Row = {
       table_schema: string;
@@ -81,7 +69,6 @@ export class PostgresConnector implements Connector {
 
     const byTable = new Map<string, SchemaTable>();
     for (const r of rows) {
-      if (allowlist && !allowlist.includes(r.table_name)) continue;
       const key = `${r.table_schema}.${r.table_name}`;
       let entry = byTable.get(key);
       if (!entry) {
@@ -95,84 +82,12 @@ export class PostgresConnector implements Connector {
       });
     }
 
-    this.schemaCache = [...byTable.values()];
-    return this.schemaCache;
+    return [...byTable.values()];
   }
 
-  async getPromptContext(): Promise<string> {
-    let schema: SchemaTable[] = [];
-    try {
-      schema = await this.getSchema();
-    } catch (err) {
-      // Don't take down the whole prompt if introspection fails — just note it.
-      return [
-        `### Database connector: \`${this.id}\` (${this.name})`,
-        this.description ? `_${this.description}_` : "",
-        `> Schema introspection failed (${(err as Error).message}). Tool calls may still work but you'll be operating blind.`,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-    }
-
-    const tableList = schema
-      .map((t) => {
-        const cols = t.columns
-          .map((c) => `${c.name} ${c.type}${c.nullable ? "?" : ""}`)
-          .join(", ");
-        return `  - \`${t.schema}.${t.table}\`(${cols})`;
-      })
-      .join("\n");
-
-    return [
-      `### Database connector: \`${this.id}\` (${this.name})`,
-      this.description ? `_${this.description}_` : "",
-      `Available tables (read-only). Use \`query_database\` with the connector_id "${this.id}":`,
-      tableList || "  _(no tables found in the configured schemas)_",
-      `**Hard rules**: SELECT/WITH only; one statement; LIMIT auto-injected at ${this.cfg.rowLimit ?? 200} rows. ` +
-        `INSERT/UPDATE/DELETE/DROP and friends are rejected.`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-
-  async tools(): Promise<AnyToolDefinition[]> {
-    const safety = {
-      rowLimit: this.cfg.rowLimit,
-      tableAllowlist: this.cfg.tableAllowlist,
-    };
-
-    return [
-      defineTool({
-        name: `query_${this.id}`,
-        description:
-          `Run a read-only SQL query against the "${this.name}" Postgres database. ` +
-          (this.description ? `${this.description} ` : "") +
-          `Returns up to ${this.cfg.rowLimit ?? 200} rows. ` +
-          `Use the schema shown in the system prompt — only SELECT/WITH queries are allowed.`,
-        inputSchema: z.object({
-          sql: z
-            .string()
-            .min(1)
-            .describe("A single SELECT or WITH ... SELECT statement."),
-        }),
-        execute: async ({ sql: rawSql }, ctx) => {
-          const checked = validateSelectSql(rawSql, safety);
-          if (!checked.ok) {
-            return { error: `sql_rejected: ${checked.reason}`, sql_attempted: rawSql };
-          }
-          ctx.logger.info(
-            { connector: this.id, sql: checked.sql },
-            "postgres_query",
-          );
-          try {
-            const rows = await this.sql.unsafe(checked.sql);
-            return { rows: rows as unknown[], count: rows.length };
-          } catch (err) {
-            return { error: (err as Error).message, sql: checked.sql };
-          }
-        },
-      }),
-    ];
+  protected async runQuery(sql: string): Promise<unknown[]> {
+    const rows = await this.sql.unsafe(sql);
+    return rows as unknown[];
   }
 
   async dispose(): Promise<void> {

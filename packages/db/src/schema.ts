@@ -244,6 +244,26 @@ export const usageEvents = pgTable(
   ],
 );
 
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull().default("default"),
+    keyHash: text("key_hash").notNull(),
+    keyPrefix: text("key_prefix").notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("api_keys_hash_idx").on(t.keyHash),
+    index("api_keys_tenant_idx").on(t.tenantId),
+  ],
+);
+
 export type Tenant = typeof tenants.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Message = typeof messages.$inferSelect;
@@ -255,3 +275,4 @@ export type Document = typeof documents.$inferSelect;
 export type DocumentChunk = typeof documentChunks.$inferSelect;
 export type File = typeof files.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;

@@ -7,24 +7,24 @@ description: The full system, layer by layer, and where each piece lives in the 
 
 <Mermaid chart={`
 flowchart TB
-  Client["<b>Client</b><br/>Your app · SDK · direct HTTP"]
-  Gateway["<b>API Gateway</b> · Hono + OpenAPIHono<br/>Auth · Rate limiting · Request ID · Validation · CORS"]
+  Client["Client"]
+  Gateway["API Gateway"]
 
-  subgraph Core["<b>Orchestration Core</b> &nbsp;·&nbsp; your IP lives here"]
+  subgraph Core["Orchestration Core · your IP lives here"]
     direction TB
-    Session["Session Manager · Memory Compaction"]
-    CR["Context Resolver<br/>parallel fetch + budget trim"]
+    Session["Session Manager"]
+    CR["Context Resolver"]
     Reg["Skill Registry · Tool Registry"]
-    Router["Model Router · fast / balanced / premium"]
-    Loop["Agent Loop · LLM ↔ tool ↔ result"]
-    Safety["Safety Layer · Zod · HITL · guardrails"]
+    Router["Model Router"]
+    Loop["Agent Loop"]
+    Safety["Safety Layer"]
     Session --> CR --> Reg --> Router --> Loop --> Safety
   end
 
-  LLM["<b>LLM Providers</b><br/>Anthropic · OpenAI · OpenRouter · Ollama"]
-  MCP["<b>MCP Hub</b><br/>built-in · custom · generic"]
-  Storage[("<b>Storage</b><br/>Postgres + pgvector · Redis · S3 / Blob")]
-  Queue["<b>Job Queue</b><br/>BullMQ + Redis · long runs · indexing"]
+  LLM["LLM Providers"]
+  MCP["MCP Hub"]
+  Storage[("Storage")]
+  Queue["Job Queue"]
 
   Client -- "HTTPS / SSE" --> Gateway
   Gateway --> Core
@@ -90,9 +90,9 @@ sequenceDiagram
   end
 
   Gateway->>DB: append usage_events
-  Gateway-->>Client: SSE stream<br/>thinking → tool_call → text → done
+  Gateway-->>Client: SSE stream
 
-  Note right of Q: long agentic runs<br/>+ embedding/compaction<br/>run on the queue,<br/>not in the request path
+  Note right of Q: long runs on the queue, not in the request path
 `} caption="Sync request lifecycle. Long-running runs move to the queue and stream over /v1/runs/:id/events instead." />
 
 In words:

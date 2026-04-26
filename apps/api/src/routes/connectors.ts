@@ -1,6 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { errors } from "@relay-e/shared";
-import { resolveTenant } from "../bootstrap/tenant.js";
 import {
   deleteConnector,
   listConnectorsForTenant,
@@ -88,8 +87,8 @@ const deleteRoute = createRoute({
 
 export const connectorRoutes = new OpenAPIHono()
   .openapi(listRoute, async (c) => {
-    const tenant = await resolveTenant(c.get("tenant").tenantId);
-    const rows = await listConnectorsForTenant(tenant.id);
+    const { tenantId } = c.get("tenant");
+    const rows = await listConnectorsForTenant(tenantId);
     return c.json({
       data: rows.map((r) => ({
         id: r.name,
@@ -100,21 +99,14 @@ export const connectorRoutes = new OpenAPIHono()
     });
   })
   .openapi(createRouteDef, async (c) => {
+    const { tenantId } = c.get("tenant");
     const body = c.req.valid("json");
-    const tenant = await resolveTenant(c.get("tenant").tenantId);
-
-    // The config payload is opaque here; the engine validates per-type at
-    // construction time. Trust-but-verify: catch a thrown EngineError, surface
-    // as 400 instead of crashing the request.
     try {
       const row = await upsertConnector({
-        tenantId: tenant.id,
-        // The body is validated as a discriminated union by the connector
-        // when it's constructed. Cast via `unknown` to satisfy TS variance —
-        // we don't want to duplicate Zod schemas at the route boundary.
+        tenantId,
         config: body as unknown as Parameters<typeof upsertConnector>[0]["config"],
       });
-      await invalidateTenantBundle(c.get("tenant").tenantId);
+      await invalidateTenantBundle(tenantId);
       return c.json({
         id: row.name,
         name: (row.config as { display?: string }).display ?? row.name,
@@ -129,13 +121,12 @@ export const connectorRoutes = new OpenAPIHono()
     }
   })
   .openapi(deleteRoute, async (c) => {
+    const { tenantId } = c.get("tenant");
     const { id } = c.req.valid("param");
-    const tenant = await resolveTenant(c.get("tenant").tenantId);
-    const ok = await deleteConnector(tenant.id, id);
+    const ok = await deleteConnector(tenantId, id);
     if (!ok) throw errors.notFound("connector");
-    await invalidateTenantBundle(c.get("tenant").tenantId);
+    await invalidateTenantBundle(tenantId);
     return c.body(null, 204);
   });
 
-// re-export for tests
 export { rowToConnectorConfig };

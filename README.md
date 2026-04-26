@@ -31,10 +31,12 @@ production.
 - **Provider-agnostic LLM layer** — Anthropic / OpenAI / **OpenRouter** (single key for 100+ models) / Ollama (offline) via the Vercel AI SDK; tier-based router (`fast` / `balanced` / `premium`) picks the cheapest model that fits the task.
 - **Skills + Tools registries** — composable units of behaviour. Tools have Zod-validated input schemas; tools that mutate state can be flagged `requiresApproval` for human-in-the-loop gating.
 - **Context Resolver** — pluggable sources (vector search, profile lookups, MCP connectors) fetched in parallel and trimmed to a token budget.
-- **Multi-tenant from day one** — `tenant_id` flows through every layer; Postgres schema is RLS-ready.
+- **Multi-tenant from day one** — `tenant_id` flows through every layer; per-tenant API keys (`/v1/api-keys`), per-tenant token quotas, and Postgres schema is RLS-ready.
+- **Per-tenant API keys** — `POST /v1/api-keys` issues scoped keys (prefixed `rle-`, hashed at rest); `DEV_API_KEY` remains as a local-dev fallback. Full revocation support.
+- **Message + usage persistence** — every agent turn writes messages, runs, and `usage_events` to Postgres. Sessions are created on first use with a deterministic UUID.
+- **Token quota enforcement** — `token_quota_monthly` per tenant enforced before every agent run; cached in-process to avoid DB round-trips.
 - **Auto-generated OpenAPI 3.1** — single source of truth is the Zod schema; `/openapi.json` and the Scalar `/docs` UI update on the next request when you add a route. No JSDoc, no codegen step.
 - **SSE streaming** — typed event channel: `thinking`, `context_resolved`, `tool_call`, `tool_result`, `usage`, `text`, `done`.
-- **Cost & token accounting** — every LLM call records tokens in/out, cache hits, and USD into `usage_events`.
 - **Local-first dev** — `docker compose up -d` boots Postgres + Redis. Add `--profile local-llm` for an optional Ollama container if you want fully-offline LLMs; otherwise just set `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` and you're running.
 - **Durable runs (BullMQ)** — long agent runs and background jobs (embedding, summarisation, scheduled triggers) run on a Redis-backed queue, not in the HTTP request path.
 
@@ -295,13 +297,14 @@ When we ship a customer-facing SDK (`@relay-e/sdk-ts`, `@relay-e/sdk-py`), it'll
 ## Roadmap
 
 - Wire `@relay-e/queue` BullMQ runs into `POST /v1/runs` (queued) alongside the existing sync `/messages` path
-- Persist sessions / messages / usage_events to Postgres on every turn
 - Memory compaction + embedding-based history retrieval
 - HITL approval gating using the queue (pause runs at `requiresApproval` tools, resume on `/v1/runs/:id/approve`)
 - MCP connector adapter (so customers plug in any data source)
 - Multi-modal input pipeline (audio → transcript, files → chunked text)
 - Eval harness (`npm run eval`) tracking quality / cost / latency per change
 - TypeScript SDK (`packages/sdk-ts`) and Python SDK (`packages/sdk-py`)
+
+**Recently shipped:** per-tenant API keys, message + usage persistence, monthly token quotas, unified `/v1/skills` CRUD, `SqlConnectorBase` for shared SQL connector logic.
 
 ## Contributing
 

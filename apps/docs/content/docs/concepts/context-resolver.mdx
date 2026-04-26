@@ -28,8 +28,8 @@ flowchart LR
   S4 --> Merge
   S5 --> Merge
 
-  Merge["Merge"] --> Sort["Sort by priority<br/>(desc)"]
-  Sort --> Trim["Trim to<br/>token budget"]
+  Merge["Merge"] --> Sort["Sort by priority"]
+  Sort --> Trim["Trim to budget"]
   Trim --> Out([prompt])
 `} caption="All sources fetch in parallel with timeouts, then are sorted and trimmed before reaching the model." />
 

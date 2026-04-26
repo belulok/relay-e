@@ -18,18 +18,18 @@ This is what makes Relay-E domain-agnostic. The same engine ships a finance app,
 flowchart LR
   subgraph C["Connector interface"]
     direction TB
-    T["tools()<br/>contributes generic tools"]
-    P["getPromptContext()<br/>describes queryable surface"]
-    D["dispose()<br/>clean up on shutdown"]
+    T["tools()"]
+    P["getPromptContext()"]
+    D["dispose()"]
   end
 
   subgraph Built["Built-in adapters"]
     direction TB
-    PG["PostgresConnector<br/>schema introspection<br/>+ SQL safety layer"]
-    MY["MySQLConnector<br/>same pattern, lazy mysql2"]
-    MO["MongoConnector<br/>sample-N-docs<br/>schema inference"]
-    HT["HttpConnector<br/>any REST API<br/>+ optional OpenAPI spec"]
-    WS["WebSearchConnector<br/>Tavily / Brave / Serper"]
+    PG["PostgresConnector"]
+    MY["MySQLConnector"]
+    MO["MongoConnector"]
+    HT["HttpConnector"]
+    WS["WebSearchConnector"]
   end
 
   PG -.implements.-> C
@@ -101,14 +101,14 @@ sequenceDiagram
     Bundle->>DB: SELECT * FROM connectors WHERE tenant_id = ?
     Bundle->>DB: SELECT * FROM skills WHERE tenant_id = ?
     Bundle->>JSON: load global connectors + skills
-    Note over Bundle: build per-tenant ConnectorRegistry<br/>+ SkillRegistry, dedupe by id
+    Note over Bundle: build ConnectorRegistry + SkillRegistry
   end
   Bundle-->>API: connectors + skills
 
   API->>Loop: runAgent({ skills }, { connectors: tenantSource })
   Loop->>Bundle: toolsFor(skill.connectorIds)
   Loop->>Bundle: promptContextFor(skill.connectorIds)
-  Loop->>Loop: build system prompt<br/>(skill + schema + context)
+  Loop->>Loop: build system prompt
   Loop->>LLM: prompt + tools
   LLM-->>Loop: tool call (e.g. query_shop_db)
   Loop->>Bundle: execute tool
@@ -244,7 +244,7 @@ For non-SQL stores (Mongo-like, key-value, graph), use `mongo.ts` as the templat
 A skill is mostly: a system prompt + a list of connector ids.
 
 ```bash
-curl -X POST http://localhost:3001/v1/tenant-skills \
+curl -X POST http://localhost:3001/v1/skills \
   -H "Authorization: Bearer $TENANT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -268,7 +268,7 @@ You wrote zero SQL. The model wrote it from the schema you registered.
 ## Caching, invalidation, and per-tenant isolation
 
 - Each tenant's bundle (connectors + skills) is cached for `TENANT_REGISTRY_TTL_MS` (default 60s).
-- Every write through `/v1/connectors` or `/v1/tenant-skills` invalidates the cache for that tenant — the next chat turn reloads.
+- Every write through `/v1/connectors` or `/v1/skills` invalidates the cache for that tenant — the next chat turn reloads.
 - Bundles are isolated by `tenant_id` — Tenant A can't see Tenant B's connectors, and the agent loop can't cross tenant boundaries.
 - Connector instances are owned by the bundle and disposed on cache eviction (no connection leaks).
 
@@ -279,10 +279,9 @@ You wrote zero SQL. The model wrote it from the schema you registered.
 | `/v1/connectors` | GET | List the calling tenant's connectors |
 | `/v1/connectors` | POST | Create or upsert (idempotent on `id`) |
 | `/v1/connectors/{id}` | DELETE | Remove a tenant connector |
-| `/v1/tenant-skills` | GET | List the tenant's skills |
-| `/v1/tenant-skills` | POST | Create or upsert (idempotent on `name`) |
-| `/v1/tenant-skills/{id}` | DELETE | Remove a tenant skill |
 | `/v1/skills` | GET | All skills visible to the tenant (globals + tenant rows) |
+| `/v1/skills` | POST | Create or upsert a tenant skill (idempotent on `name`) |
+| `/v1/skills/{id}` | DELETE | Remove a tenant skill |
 | `/v1/tools` | GET | All tools visible to the tenant (explicit + connector-derived) |
 
 Postman / Bruno / Insomnia: re-import [`/openapi.json`](https://relay-e-docs.vercel.app/docs/api/overview) and the new endpoints appear automatically.

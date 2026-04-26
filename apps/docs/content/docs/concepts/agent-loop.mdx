@@ -56,8 +56,8 @@ The actual implementation lives in [`packages/engine/src/agent/loop.ts`](https:/
 
 <Mermaid chart={`
 flowchart TD
-  Start(["User message"]) --> Resolve["Resolve context<br/>parallel · budget-trimmed"]
-  Resolve --> Build["Build system prompt<br/>skills · examples · context"]
+  Start(["User message"]) --> Resolve["Resolve context"]
+  Resolve --> Build["Build system prompt"]
   Build --> Call["Call LLM"]
   Call --> Decide{"Tool calls?"}
   Decide -- "no · finish_reason: stop" --> Stream["Stream text + usage"]
@@ -122,7 +122,7 @@ The engine writes to `usage_events` (per-call) and aggregates into `sessions.tok
 ## What's not yet in the loop
 
 - **Streaming tokens** — currently the loop awaits the full response, then the API streams the result. True token-level streaming is a swap to `streamText()` and a roadmap item.
-- **Persistence** — sync runs don't currently write messages to Postgres. Queued runs will, when `/v1/runs` lands.
+- **Queued runs** — long agentic runs (30s+) should move off the sync path. `/v1/runs` is roadmap; for now everything runs synchronously in the request handler.
 - **Memory compaction** — long sessions exceed the context window. The compaction strategy (summarise old turns, embed-and-retrieve) is designed but not wired.
 
 These are the next iterations. The skeleton is intentionally lean so each addition is a small, reviewable change.

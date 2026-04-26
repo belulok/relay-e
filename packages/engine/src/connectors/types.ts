@@ -1,81 +1,34 @@
 import type { AnyToolDefinition } from "../tools/index.js";
+import type {
+  PostgresConnectorConfigSchema,
+  SqlConnectorConfigSchema,
+  MongoConnectorConfigSchema,
+  HttpConnectorConfigSchema,
+  WebSearchConnectorConfigSchema,
+  MCPConnectorConfigSchema,
+} from "./schemas.js";
+import type { z } from "zod";
 
 export type ConnectorType =
   | "postgres"
   | "mysql"
   | "sqlite"   // roadmap — pattern in mysql.ts works as a template
   | "mssql"    // roadmap
-  | "mongo"    // roadmap (different schema-discovery — use sample docs)
+  | "mongo"
   | "http"
   | "websearch"
   | "mcp";
 
 /**
- * Configuration shapes for each connector type. Loaded from JSON / DB,
- * validated at registration time. Secrets reference env vars (never inline).
+ * Config types are derived directly from the canonical Zod schemas in
+ * `schemas.ts` — no hand-maintained duplication.
  */
-export interface PostgresConnectorConfig {
-  url: string;            // postgres://user:pass@host:port/db — supports ${ENV_VAR} substitution
-  readOnly?: boolean;     // recommended: true (relies on a read-only DB role)
-  maxConnections?: number;
-  schemas?: string[];     // schemas to introspect (default: ["public"])
-  tableAllowlist?: string[]; // optional: limit which tables the LLM can see
-  rowLimit?: number;      // hard cap injected into queries (default: 200)
-  description?: string;   // human-readable summary, prepended to schema in prompt
-}
-
-export interface HttpConnectorConfig {
-  baseUrl: string;
-  description?: string;
-  auth?: {
-    type: "bearer" | "basic" | "header" | "none";
-    tokenEnv?: string;     // for bearer: env var holding the token
-    username?: string;
-    passwordEnv?: string;
-    headerName?: string;
-    headerValueEnv?: string;
-  };
-  // Optional: load this OpenAPI spec on boot to inject endpoint surface into prompts
-  openApiUrl?: string;
-  // Optional: explicit endpoint allowlist (keeps the model on rails)
-  endpoints?: Array<{
-    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-    path: string;          // e.g. "/users/{id}/orders"
-    summary?: string;
-  }>;
-}
-
-export interface WebSearchConnectorConfig {
-  provider: "tavily" | "brave" | "serper";
-  apiKeyEnv: string;       // env var holding the provider's API key
-  maxResults?: number;     // default 5
-}
-
-export interface MCPConnectorConfig {
-  // Roadmap — interface only for now.
-  transport: "stdio" | "sse";
-  command?: string;        // for stdio
-  args?: string[];
-  url?: string;            // for sse
-}
-
-export interface SqlConnectorConfig {
-  /** Connection string. Supports `${ENV_VAR}` substitution. */
-  url: string;
-  description?: string;
-  schemas?: string[];
-  tableAllowlist?: string[];
-  rowLimit?: number;
-}
-
-export interface MongoConnectorConfig {
-  url: string;
-  dbName?: string;
-  description?: string;
-  collectionAllowlist?: string[];
-  rowLimit?: number;
-  sampleSize?: number;
-}
+export type PostgresConnectorConfig = z.infer<typeof PostgresConnectorConfigSchema>;
+export type SqlConnectorConfig = z.infer<typeof SqlConnectorConfigSchema>;
+export type MongoConnectorConfig = z.infer<typeof MongoConnectorConfigSchema>;
+export type HttpConnectorConfig = z.infer<typeof HttpConnectorConfigSchema>;
+export type WebSearchConnectorConfig = z.infer<typeof WebSearchConnectorConfigSchema>;
+export type MCPConnectorConfig = z.infer<typeof MCPConnectorConfigSchema>;
 
 export type ConnectorConfig =
   | { type: "postgres"; id: string; name: string; config: PostgresConnectorConfig }

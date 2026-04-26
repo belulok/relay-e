@@ -5,10 +5,24 @@ description: What's coming, ordered by ROI. Pre-1.0; subject to change.
 
 This is a living document. The state of `master` is the source of truth — this page captures the priority order.
 
-## Near-term (next minor releases)
+## Recently shipped
 
-### Persistence in the request path
-Today sync runs don't write messages to Postgres. The DB schema is ready; it's a wire-up. Lands when sessions become real (memory across turns, not just within one).
+### Per-tenant API keys ✓
+`POST /v1/api-keys`, `GET /v1/api-keys`, `DELETE /v1/api-keys/{id}` — first-class key issuance and revocation, scoped per tenant. Keys are SHA-256 hashed at rest; the raw value is shown once on creation. `DEV_API_KEY` remains as a local-dev fallback.
+
+### Message + usage persistence ✓
+Every agent turn now writes user message, assistant message, run record, and `usage_events` row to Postgres — fire-and-forget after the HTTP response is sent. Sessions are created on first use (deterministic UUID derived from tenant + session key).
+
+### Per-tenant token quota middleware ✓
+`token_quota_monthly` on the tenants table enforced before every agent run. Usage is cached in-process (5 min TTL) and invalidated after each turn is persisted. Quota 0 = unlimited.
+
+### Unified skills endpoint ✓
+`/v1/skills` now handles CRUD (`GET`, `POST`, `DELETE`) and the response includes `id`, `source` (`"global"` or `"tenant"`), `systemPrompt`, `toolNames`, and `connectorIds`. `/v1/tenant-skills` is retired.
+
+### SqlConnectorBase abstract class ✓
+`PostgresConnector` and `MySQLConnector` now share schema introspection, SQL safety layer, prompt context formatting, and tool generation through an abstract base class. Adding a new SQL connector type (SQLite, MSSQL, BigQuery) is now ~80 lines.
+
+## Near-term (next minor releases)
 
 ### Memory compaction
 Long sessions exceed any context window. The plan: keep last N turns verbatim, summarise older turns into a running memory document, embed individual old turns and retrieve when relevant.
@@ -23,7 +37,7 @@ For tools flagged `requiresApproval`, the queued path pauses, the API exposes ap
 Today, tools are TypeScript. With MCP support, customers point Relay-E at an MCP server (their own or a standard one — Stripe, Plaid, etc.) and get tools + resources for free. This is the unlock for "real domain integrations without forking."
 
 ### Skill-as-config
-Skills loadable from JSON / DB / environment. Eliminates the fork requirement for most use cases. Schema is already serialisable.
+Skills are DB-storable (via `POST /v1/skills`) but the JSON config loader is not yet wired — `relay-e.config.json` can't define skills inline today. Lands when the bundle loader reads skills from both the JSON file and the DB.
 
 ## Medium-term
 
@@ -38,12 +52,6 @@ Audio → transcript (Whisper / Deepgram), files → chunked text + embeddings, 
 
 ### Eval harness (`npm run eval`)
 A fixed dataset of representative prompts run on every PR. LLM-as-judge or rule-based scoring. Tracks quality / cost / latency over time. Without this, optimization changes ship blindly.
-
-### Per-tenant cost guardrails
-Hard token quotas, soft warnings at 80%, automatic cutoffs. First-class billing primitive.
-
-### Per-tenant API keys
-Replaces `DEV_API_KEY` with a key issuance + revocation flow. Foundation for proper multi-tenant SaaS.
 
 ### Observability integrations
 First-class Langfuse / Helicone / OpenTelemetry hooks. Today the data shape is structured but the integrations are bring-your-own.

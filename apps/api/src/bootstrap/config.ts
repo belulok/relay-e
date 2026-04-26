@@ -1,124 +1,16 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { z } from "zod";
 import { logger } from "@relay-e/shared";
+import { AppConfigSchema } from "@relay-e/engine";
+
+export type { AppConfig } from "@relay-e/engine";
 
 /**
  * Declarative config — loaded from `relay-e.config.json` at the repo root,
- * or from a path set in `RELAY_E_CONFIG`. This is the source of truth for
- * skills + connectors so customers do NOT need to fork the engine.
- *
- * Roadmap: same shape moves into Postgres so customers can manage skills
- * via API/UI instead of a JSON file.
+ * or from a path set in `RELAY_E_CONFIG`. Connector + skill Zod schemas live
+ * in `@relay-e/engine` so this file is the single place that knows about the
+ * filesystem; the engine package stays runtime-only.
  */
-
-const ConnectorBaseSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-});
-
-const PostgresConnectorSchema = ConnectorBaseSchema.extend({
-  type: z.literal("postgres"),
-  config: z.object({
-    url: z.string().min(1),
-    description: z.string().optional(),
-    readOnly: z.boolean().optional(),
-    maxConnections: z.number().int().positive().optional(),
-    schemas: z.array(z.string()).optional(),
-    tableAllowlist: z.array(z.string()).optional(),
-    rowLimit: z.number().int().positive().optional(),
-  }),
-});
-
-const MySqlConnectorSchema = ConnectorBaseSchema.extend({
-  type: z.literal("mysql"),
-  config: z.object({
-    url: z.string().min(1),
-    description: z.string().optional(),
-    schemas: z.array(z.string()).optional(),
-    tableAllowlist: z.array(z.string()).optional(),
-    rowLimit: z.number().int().positive().optional(),
-  }),
-});
-
-const MongoConnectorSchema = ConnectorBaseSchema.extend({
-  type: z.literal("mongo"),
-  config: z.object({
-    url: z.string().min(1),
-    dbName: z.string().optional(),
-    description: z.string().optional(),
-    collectionAllowlist: z.array(z.string()).optional(),
-    rowLimit: z.number().int().positive().optional(),
-    sampleSize: z.number().int().positive().optional(),
-  }),
-});
-
-const HttpConnectorSchema = ConnectorBaseSchema.extend({
-  type: z.literal("http"),
-  config: z.object({
-    baseUrl: z.string().url(),
-    description: z.string().optional(),
-    auth: z
-      .object({
-        type: z.enum(["bearer", "basic", "header", "none"]),
-        tokenEnv: z.string().optional(),
-        username: z.string().optional(),
-        passwordEnv: z.string().optional(),
-        headerName: z.string().optional(),
-        headerValueEnv: z.string().optional(),
-      })
-      .optional(),
-    openApiUrl: z.string().url().optional(),
-    endpoints: z
-      .array(
-        z.object({
-          method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-          path: z.string(),
-          summary: z.string().optional(),
-        }),
-      )
-      .optional(),
-  }),
-});
-
-const WebSearchConnectorSchema = ConnectorBaseSchema.extend({
-  type: z.literal("websearch"),
-  config: z.object({
-    provider: z.enum(["tavily", "brave", "serper"]),
-    apiKeyEnv: z.string().min(1),
-    maxResults: z.number().int().positive().optional(),
-  }),
-});
-
-const ConnectorSchema = z.discriminatedUnion("type", [
-  PostgresConnectorSchema,
-  MySqlConnectorSchema,
-  MongoConnectorSchema,
-  HttpConnectorSchema,
-  WebSearchConnectorSchema,
-]);
-
-const SkillSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  systemPrompt: z.string().min(1),
-  connectorIds: z.array(z.string()).optional(),
-  toolNames: z.array(z.string()).optional(),
-  preferredTier: z.enum(["fast", "balanced", "premium"]).optional(),
-  examples: z
-    .array(z.object({ input: z.string(), output: z.string() }))
-    .optional(),
-});
-
-export const ConfigSchema = z
-  .object({
-    connectors: z.array(ConnectorSchema).default([]),
-    skills: z.array(SkillSchema).default([]),
-  })
-  // Allow comments / unknown extras in the JSON without failing validation.
-  .passthrough();
-
-export type AppConfig = z.infer<typeof ConfigSchema>;
 
 const DEFAULT_NAMES = ["relay-e.config.json", "relay-e.config.example.json"];
 
@@ -149,7 +41,7 @@ function climbingCandidates(start: string, names: string[]): string[] {
  * Falls back to an empty config (with a warning) if nothing matches, so a
  * fresh checkout still boots and shows a helpful "no skills" state.
  */
-export async function loadAppConfig(cwd = process.cwd()): Promise<AppConfig> {
+export async function loadAppConfig(cwd = process.cwd()) {
   const explicit = process.env.RELAY_E_CONFIG;
   const candidates = explicit
     ? [resolve(cwd, explicit), ...climbingCandidates(cwd, DEFAULT_NAMES)]
@@ -158,11 +50,11 @@ export async function loadAppConfig(cwd = process.cwd()): Promise<AppConfig> {
   for (const path of candidates) {
     try {
       const raw = await readFile(path, "utf8");
-      // Strip our `_comment` keys (and any other `_` prefixed metadata) so
+      // Strip `_comment` keys (and any other `_` prefixed metadata) so
       // Zod's strict schema doesn't choke on them.
       const json = JSON.parse(raw);
       const stripped = stripUnderscoreKeys(json);
-      const parsed = ConfigSchema.parse(stripped);
+      const parsed = AppConfigSchema.parse(stripped);
       logger.info(
         { configPath: path, connectors: parsed.connectors.length, skills: parsed.skills.length },
         "config_loaded",
@@ -175,7 +67,7 @@ export async function loadAppConfig(cwd = process.cwd()): Promise<AppConfig> {
   }
 
   logger.warn("no_config_found — running with empty connectors + skills");
-  return ConfigSchema.parse({ connectors: [], skills: [] });
+  return AppConfigSchema.parse({ connectors: [], skills: [] });
 }
 
 function stripUnderscoreKeys(value: unknown): unknown {

@@ -8,6 +8,13 @@
       "when": 1777138436072,
       "tag": "0000_lyrical_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777180286249,
+      "tag": "0001_square_longshot",
+      "breakpoints": true
     }
   ]
 }

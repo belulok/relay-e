@@ -1,97 +1,139 @@
 ---
 title: Authentication
-description: Bearer tokens for now (DEV_API_KEY). Per-tenant API keys, OAuth, and scoped tokens are roadmap.
+description: Per-tenant API keys via /v1/api-keys. DEV_API_KEY remains available as a fallback for local development.
 ---
 
-## Today: a single dev key
+All `/v1/*` endpoints require a Bearer token in the `Authorization` header:
 
-For v0.0.1, all `/v1/*` endpoints are protected by a single API key set via `DEV_API_KEY`:
+```bash
+curl http://localhost:3001/v1/skills \
+  -H "Authorization: Bearer rle-<your-key>"
+```
+
+Missing or incorrect → `401 unauthorized`.
+
+## Per-tenant API keys (recommended)
+
+Relay-E issues API keys per tenant. Each key is scoped to a single tenant — a key can only access that tenant's connectors, skills, sessions, and usage data.
+
+### Create a key
+
+```bash
+POST /v1/api-keys
+Authorization: Bearer <existing-key-or-DEV_API_KEY>
+Content-Type: application/json
+
+{ "name": "production" }
+```
+
+Response (key shown **once** — store it securely):
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "production",
+  "prefix": "rle-a1b2c3",
+  "raw": "rle-a1b2c3d4e5f6...",
+  "createdAt": "2026-04-26T00:00:00.000Z"
+}
+```
+
+The `raw` field is the key to use in `Authorization: Bearer`. It is never returned again after this response.
+
+### List keys
+
+```bash
+GET /v1/api-keys
+Authorization: Bearer <key>
+```
+
+Returns active (non-revoked) keys for the calling tenant — no hashes, no raw values:
+
+```json
+{
+  "data": [
+    {
+      "id": "550e8400-...",
+      "name": "production",
+      "prefix": "rle-a1b2c3",
+      "lastUsedAt": "2026-04-26T10:00:00.000Z",
+      "createdAt": "2026-04-26T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+### Revoke a key
+
+```bash
+DELETE /v1/api-keys/{id}
+Authorization: Bearer <key>
+```
+
+Soft-deletes the key by setting `revoked_at`. Subsequent requests using the revoked key receive `401`.
+
+## DEV_API_KEY (local development only)
+
+For local development, set `DEV_API_KEY` in `.env`:
 
 ```bash title=".env"
 DEV_API_KEY=sk_dev_local_change_me
 ```
 
-```bash
-curl http://localhost:3001/v1/skills \
-  -H "Authorization: Bearer sk_dev_local_change_me"
-```
+When a request arrives with this key and no matching DB row is found, Relay-E falls back to a built-in `dev-tenant`. This avoids needing a database round-trip during initial setup.
 
-Missing or incorrect → `401 unauthorized`.
+**Do not use `DEV_API_KEY` in production.** It bypasses the per-tenant key lookup and always resolves to the same internal tenant. Treat it as a master key.
 
-This is **dev-only**. In production, treat this like a master key and put the engine behind your own auth proxy or API gateway.
+## In production
 
-## In production — what to do today
+For multi-tenant SaaS, each of your customers gets their own API key via `POST /v1/api-keys`. Your application:
 
-Run Relay-E in your private network and front it with one of:
+1. Creates a tenant (or derives one from your own user model).
+2. Calls `POST /v1/api-keys` on behalf of that tenant to issue a key.
+3. Stores the key securely in your own secrets manager or sends it to the customer.
+4. The customer uses the key directly in `Authorization: Bearer`.
 
-| Approach | When |
-|---|---|
-| **API Gateway** (Kong, Tyk, AWS API Gateway) | You already have one — issue per-customer keys, gateway forwards to Relay-E with the master key |
-| **App-level proxy** | Your existing app's backend proxies user requests to Relay-E, forwarding the user's identity as headers |
-| **Cloudflare Workers + Bearer auth** | Edge auth with low overhead |
-| **Tailscale / VPC-only** | Internal use only, no public surface |
-
-Example app-level proxy:
+For setups where end users should never see a Relay-E key, proxy through your own backend:
 
 ```ts title="your-app/api/relay-e/[...path].ts"
 export async function POST(req: Request, { params }: { params: { path: string[] } }) {
-  // Use your existing user auth
   const user = await authenticateRequestSomehow(req);
   if (!user) return new Response("unauthorized", { status: 401 });
 
-  // Proxy to Relay-E with the master key + user context
   const url = `${process.env.RELAY_E_URL}/v1/${params.path.join("/")}`;
   return fetch(url, {
     method: "POST",
     headers: {
       "authorization": `Bearer ${process.env.RELAY_E_KEY}`,
       "content-type": "application/json",
-      "x-tenant-id": user.tenantId,        // forwarded by Relay-E into ctx
-      "x-user-id": user.id,
     },
     body: req.body,
   });
 }
 ```
 
-Your customers never see the master key. Per-user attribution flows through `x-tenant-id` and `x-user-id` headers.
+Your customers never see the Relay-E key — your backend holds it and proxies on their behalf.
+
+## Common errors
+
+```json
+{
+  "error": {
+    "type": "authentication_error",
+    "code": "unauthorized",
+    "message": "Missing or invalid API key",
+    "request_id": "req_..."
+  }
+}
+```
+
+The same response is returned whether the key is missing or wrong — don't leak whether a key exists. Use `request_id` for debugging.
 
 ## Roadmap
 
 | Coming | Why |
 |---|---|
-| **Per-tenant API keys** | First-class multi-tenancy without a proxy |
 | **Scoped tokens** (skills, sessions, expiry) | Customer-issuable, narrowly-scoped |
 | **OAuth (Authorization Code + PKCE)** | Proper SaaS auth |
 | **mTLS** | High-compliance customers |
 | **JWT support** | Easy integration with Clerk / WorkOS / Auth0 / Cognito |
-
-When per-tenant keys land, the auth header changes shape but the migration is one config flag.
-
-## Common errors
-
-```json
-// Missing header
-{
-  "error": {
-    "type": "authentication_error",
-    "code": "unauthorized",
-    "message": "Missing or invalid API key",
-    "request_id": "req_..."
-  }
-}
-```
-
-```json
-// Wrong key
-{
-  "error": {
-    "type": "authentication_error",
-    "code": "unauthorized",
-    "message": "Missing or invalid API key",
-    "request_id": "req_..."
-  }
-}
-```
-
-The same code is returned in both cases — don't leak whether the key exists. The `request_id` is your handle for debugging.
