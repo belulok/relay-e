@@ -60,8 +60,8 @@ flowchart TD
   Resolve --> Build["Build system prompt"]
   Build --> Call["Call LLM"]
   Call --> Decide{"Tool calls?"}
-  Decide -- "no · finish_reason: stop" --> Stream["Stream text + usage"]
-  Decide -- "yes" --> Validate["Validate input · Zod"]
+  Decide -- "no, stop" --> Stream["Stream text + usage"]
+  Decide -- "yes" --> Validate["Validate input"]
   Validate --> Approve{"requiresApproval?"}
   Approve -- "yes" --> Pause["Emit tool_awaiting_approval"]
   Approve -- "no" --> Execute["Execute tool"]

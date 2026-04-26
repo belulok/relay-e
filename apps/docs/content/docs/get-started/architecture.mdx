@@ -10,11 +10,11 @@ flowchart TB
   Client["Client"]
   Gateway["API Gateway"]
 
-  subgraph Core["Orchestration Core · your IP lives here"]
+  subgraph Core["Orchestration Core"]
     direction TB
     Session["Session Manager"]
     CR["Context Resolver"]
-    Reg["Skill Registry · Tool Registry"]
+    Reg["Skill and Tool Registries"]
     Router["Model Router"]
     Loop["Agent Loop"]
     Safety["Safety Layer"]
@@ -70,10 +70,10 @@ sequenceDiagram
   participant Q as Queue
 
   Client->>Gateway: POST /v1/sessions/:id/messages
-  Note over Gateway: auth · tenant_id · request_id · rate limit
+  Note over Gateway: auth, tenant_id, request_id, rate limit
   Gateway->>Resolver: resolve(query, skills)
   par parallel sources
-    Resolver->>DB: vector search · profile · history
+    Resolver->>DB: vector search, profile, history
   and
     Resolver-->>Resolver: trim to token budget
   end

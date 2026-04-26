@@ -54,20 +54,20 @@ sequenceDiagram
   autonumber
   participant Client
   participant API as API server
-  participant Q as Queue · Redis
+  participant Q as Queue Redis
   participant Worker
 
   Client->>API: POST /v1/runs
-  API->>API: validate · create runs row
+  API->>API: validate, create runs row
   API->>Q: enqueue agent-runs job
-  API-->>Client: { run_id }
+  API-->>Client: run_id
 
-  Client->>API: GET /v1/runs/:id/events (SSE)
-  API->>Q: subscribe (QueueEvents)
+  Client->>API: GET /v1/runs/:id/events SSE
+  API->>Q: subscribe QueueEvents
 
   Worker->>Q: claim job
-  loop run agent loop
-    Worker->>Worker: LLM ↔ tool ↔ result
+  loop agent loop
+    Worker->>Worker: LLM, tool, result
     Worker-->>Q: emit step events
     Q-->>API: forward event
     API-->>Client: SSE frame

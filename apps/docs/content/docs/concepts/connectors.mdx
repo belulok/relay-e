@@ -105,7 +105,7 @@ sequenceDiagram
   end
   Bundle-->>API: connectors + skills
 
-  API->>Loop: runAgent({ skills }, { connectors: tenantSource })
+  API->>Loop: runAgent with skills and connectors
   Loop->>Bundle: toolsFor(skill.connectorIds)
   Loop->>Bundle: promptContextFor(skill.connectorIds)
   Loop->>Loop: build system prompt
