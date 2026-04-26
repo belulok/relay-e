@@ -1,4 +1,5 @@
 node_modules
+relay-e.config.json
 dist
 .turbo
 .env

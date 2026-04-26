@@ -72,8 +72,8 @@ const SendMessageRoute = createRoute({
 });
 
 const _app = new OpenAPIHono();
-// Quota check runs before every handler in this sub-app, after auth sets tenant context.
-_app.use("*", quotaMiddleware);
+// Quota check scoped to the message route only — not /openapi.json or other paths.
+_app.use("/v1/sessions/*", quotaMiddleware);
 export const messagesRoutes = _app.openapi(SendMessageRoute, async (c) => {
     const tenant = c.get("tenant");
     const requestId = c.get("requestId");

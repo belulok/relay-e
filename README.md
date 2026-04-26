@@ -99,6 +99,8 @@ You only need **one** of these to run end-to-end:
 | **OpenRouter** | One key, 100+ models (Anthropic, OpenAI, Llama, Mistral, …), unified billing | `OPENROUTER_API_KEY=sk-or-...` |
 | **Anthropic** | Direct, lowest latency for Claude, supports prompt caching | `ANTHROPIC_API_KEY=sk-ant-...` |
 | **OpenAI** | Direct, fallback / GPT-specific features | `OPENAI_API_KEY=sk-...` |
+| **MiniMax** | Chinese LLM provider — MiniMax-Text-01 (1M context), MiniMax-M1 (reasoning) | `MINIMAX_API_KEY=...` |
+| **Moonshot / Kimi** | Chinese LLM provider — 8k / 32k / 128k context, kimi-latest | `MOONSHOT_API_KEY=...` |
 | **Ollama** (offline) | No cloud at all — pulls models locally | `OLLAMA_BASE_URL=http://localhost:11434` |
 
 For Ollama-only mode:

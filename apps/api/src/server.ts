@@ -28,7 +28,7 @@ app.doc("/openapi.json", {
   openapi: "3.1.0",
   info: {
     title: "Relay-E API",
-    version: "0.0.1",
+    version: "0.1.0",
     description:
       "Context-aware AI orchestration engine. Add a route under apps/api/src/routes/, " +
       "register it in routes/index.ts, and it shows up here on the next request.",

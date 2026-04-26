@@ -1,5 +1,5 @@
 {
   "title": "Reference",
   "icon": "BookMarked",
-  "pages": ["versioning", "roadmap", "faq", "license"]
+  "pages": ["changelog", "versioning", "roadmap", "faq", "license"]
 }

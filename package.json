@@ -1,6 +1,6 @@
 {
   "name": "relay-e",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Multi-tenant context-aware AI orchestration engine. Skills, tools, and a context resolver in front of any LLM (Anthropic, OpenAI, or local Ollama).",

@@ -209,7 +209,35 @@ Wrap any base URL. Optionally pass an OpenAPI spec to surface every endpoint to 
 }
 ```
 
-Generates `call_stripe(method, path, body?, query?)`. The model picks the path based on the OpenAPI summary it was shown. Auth tokens are resolved per-request from env vars — secrets never sit in DB rows.
+Generates `call_stripe(method, path, body?, query?)`. The model picks the path based on the OpenAPI summary it was shown.
+
+#### Auth options
+
+| Field | Purpose |
+|---|---|
+| `tokenEnv` | Name of the env var holding the secret (good when `relay-e.config.json` is in git) |
+| `token` | Inline secret value (safe when `relay-e.config.json` is gitignored — the default since v0.1.0) |
+| `extraHeaders` | Additional headers sent on every request and the OpenAPI spec fetch (e.g. Supabase requires both `Authorization` and `apikey`) |
+
+**Inline token example** (config file is gitignored, so secrets are safe):
+
+```json
+{
+  "type": "http",
+  "id": "company_db",
+  "config": {
+    "baseUrl": "https://your-project.supabase.co/rest/v1",
+    "openApiUrl": "https://your-project.supabase.co/rest/v1/",
+    "auth": {
+      "type": "bearer",
+      "token": "your-service-role-key",
+      "extraHeaders": { "apikey": "your-service-role-key" }
+    }
+  }
+}
+```
+
+`relay-e.config.json` is gitignored by default (like `.env`). Keep `relay-e.config.example.json` in git as the public template and fill in real secrets locally or on the server.
 
 ### Web search
 

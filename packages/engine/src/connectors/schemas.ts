@@ -40,7 +40,9 @@ export const MongoConnectorConfigSchema = z.object({
 
 export const HttpAuthSchema = z.object({
   type: z.enum(["bearer", "basic", "header", "none"]),
-  tokenEnv: z.string().optional(),
+  token: z.string().optional(),                        // inline value (use when config file is gitignored)
+  tokenEnv: z.string().optional(),                     // env var name (use when config is in git)
+  extraHeaders: z.record(z.string()).optional(),        // additional headers sent with every request (e.g. apikey for Supabase)
   username: z.string().optional(),
   passwordEnv: z.string().optional(),
   headerName: z.string().optional(),

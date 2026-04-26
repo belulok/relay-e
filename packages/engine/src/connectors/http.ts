@@ -49,7 +49,17 @@ export class HttpConnector implements Connector {
     if (this.endpointSummary) return this.endpointSummary;
 
     try {
-      const res = await fetch(this.cfg.openApiUrl);
+      // Pass auth headers when fetching the spec — some APIs (e.g. Supabase) gate the OpenAPI endpoint.
+      const specHeaders: Record<string, string> = {};
+      const auth = this.cfg.auth;
+      if (auth && auth.type !== "none") {
+        if (auth.extraHeaders) Object.assign(specHeaders, auth.extraHeaders);
+        if (auth.type === "bearer") {
+          const token = auth.token ?? (auth.tokenEnv ? process.env[auth.tokenEnv] : undefined);
+          if (token) specHeaders["authorization"] = `Bearer ${token}`;
+        }
+      }
+      const res = await fetch(this.cfg.openApiUrl, { headers: specHeaders });
       if (!res.ok) return [];
       const spec = (await res.json()) as {
         paths?: Record<string, Record<string, { summary?: string }>>;
@@ -141,11 +151,15 @@ export class HttpConnector implements Connector {
             headers["content-type"] = "application/json";
           }
 
-          // Resolve auth at call time — secrets never live in the JSON file.
+          // Resolve auth — inline `token` takes priority over `tokenEnv` (env var name).
           const auth = this.cfg.auth;
           if (auth && auth.type !== "none") {
-            if (auth.type === "bearer" && auth.tokenEnv) {
-              const token = process.env[auth.tokenEnv];
+            // Extra headers first (e.g. Supabase requires both Authorization and apikey)
+            if (auth.extraHeaders) {
+              Object.assign(headers, auth.extraHeaders);
+            }
+            if (auth.type === "bearer") {
+              const token = auth.token ?? (auth.tokenEnv ? process.env[auth.tokenEnv] : undefined);
               if (token) headers.authorization = `Bearer ${token}`;
             } else if (auth.type === "basic" && auth.username && auth.passwordEnv) {
               const password = process.env[auth.passwordEnv];

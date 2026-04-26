@@ -7,6 +7,22 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-26
+
+### Added
+
+- **MiniMax provider** (`minimax:MiniMax-Text-01`, `minimax:MiniMax-M1`) — OpenAI-compatible adapter via `https://api.minimax.chat/v1`. Set `MINIMAX_API_KEY` to enable. Pricing entries added to `packages/providers/src/pricing.ts`.
+- **Moonshot / Kimi provider** (`moonshot:moonshot-v1-8k`, `moonshot:moonshot-v1-32k`, `moonshot:moonshot-v1-128k`, `moonshot:kimi-latest`) — OpenAI-compatible adapter via `https://api.moonshot.cn/v1`. Set `MOONSHOT_API_KEY` to enable.
+- **HTTP connector: inline `token` field** (`HttpAuthSchema.token`) — secrets can now be written directly in `relay-e.config.json` when that file is gitignored, without needing an env var reference.
+- **HTTP connector: `extraHeaders`** (`HttpAuthSchema.extraHeaders`) — map of additional headers sent on every request and when fetching the OpenAPI spec. Required for APIs like Supabase that need both `Authorization` and `apikey` headers.
+- **HTTP connector: authenticated OpenAPI spec fetch** — `fetchOpenApiEndpoints()` now passes auth and `extraHeaders` when calling `openApiUrl`, enabling auto-discovery against gated endpoints (e.g. Supabase PostgREST).
+- **`relay-e.config.json` gitignored** — added to `.gitignore`. `relay-e.config.example.json` stays tracked as the public template. Mirrors the `.env` / `.env.example` pattern.
+- **API dev/start scripts auto-load `.env`** — `apps/api/package.json` updated to `tsx watch --env-file ../../.env` and `node --env-file ../../.env --import tsx/esm`. Fixes env vars not being available when the server is launched from the workspace subdirectory via Turborepo.
+
+### Changed
+
+- **License: MIT → Elastic License 2.0 (ELv2)** — Relay-E is commercial source-available software. Self-hosting and internal use are free; offering it as a managed service requires a commercial agreement. See `LICENSE` and the [License reference page](/docs/reference/license).
+
 ### Added
 
 - **Per-tenant API keys** — `POST /v1/api-keys`, `GET /v1/api-keys`,
@@ -118,5 +134,6 @@ and the project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v
 - Example finance skill with three tools (`get_balance`, `analyze_spending`,
   `transfer_funds` with `requiresApproval` flag).
 
-[Unreleased]: https://github.com/belulok/relay-e/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/belulok/relay-e/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/belulok/relay-e/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/belulok/relay-e/releases/tag/v0.0.1

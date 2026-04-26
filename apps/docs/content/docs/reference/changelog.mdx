@@ -1,0 +1,52 @@
+---
+title: Changelog
+description: What changed in each release of Relay-E.
+---
+
+Full changelog is also on [GitHub](https://github.com/belulok/relay-e/blob/master/CHANGELOG.md).
+
+## v0.1.0 — 2026-04-26
+
+### Added
+
+**New providers**
+- **MiniMax** — `minimax:MiniMax-Text-01` (1M-token context) and `minimax:MiniMax-M1` (reasoning). Set `MINIMAX_API_KEY`. See [Providers → MiniMax](/docs/concepts/providers#minimax).
+- **Moonshot / Kimi** — `moonshot:moonshot-v1-8k/32k/128k` and `moonshot:kimi-latest`. Set `MOONSHOT_API_KEY`. See [Providers → Moonshot](/docs/concepts/providers#moonshot--kimi).
+
+**HTTP connector improvements**
+- `token` inline field in auth config — write secrets directly in `relay-e.config.json` when the file is gitignored, without an env var reference.
+- `extraHeaders` in auth config — additional headers sent on every request and the OpenAPI spec fetch. Required for Supabase (needs both `Authorization` and `apikey`).
+- OpenAPI spec fetch now passes auth headers — enables auto-discovery against gated endpoints like Supabase PostgREST.
+
+**Config file pattern**
+- `relay-e.config.json` is now gitignored. `relay-e.config.example.json` stays tracked as the public template — same pattern as `.env` / `.env.example`. Copy the example, customise locally, never commit secrets.
+
+**Dev environment**
+- `apps/api` dev and start scripts now pass `--env-file ../../.env` automatically. The server loads root env vars correctly when launched via Turborepo from a workspace subdirectory.
+
+### Changed
+
+- **License: MIT → ELv2** — Relay-E is now commercial source-available. Self-hosting and internal use are free. See [License](/docs/reference/license).
+
+---
+
+## v0.0.1 — 2026-04-26
+
+Initial release. See the [GitHub Release](https://github.com/belulok/relay-e/releases/tag/v0.0.1) for the full list.
+
+**Core**
+- Turborepo monorepo with `apps/api` + `@relay-e/shared`, `db`, `providers`, `engine`, `queue`.
+- Hono API server with SSE streaming on `POST /v1/sessions/{id}/messages`.
+- Auto-generated OpenAPI 3.1 spec at `/openapi.json` + Scalar UI at `/docs`.
+
+**Providers**
+- Anthropic, OpenAI, OpenRouter, Ollama via the Vercel AI SDK.
+- Tier-based model router (`fast` / `balanced` / `premium`).
+
+**Engine**
+- Skill registry, Tool registry, Context Resolver, prompt builder, agent loop.
+- Per-tenant API keys, monthly token quotas, message + usage persistence.
+
+**Infrastructure**
+- Docker Compose local stack (Postgres + pgvector, Redis, optional Ollama).
+- Multi-stage Dockerfile; CI via GitHub Actions; automated release pipeline to `ghcr.io/belulok/relay-e`.

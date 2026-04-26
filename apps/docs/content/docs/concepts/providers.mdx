@@ -1,9 +1,9 @@
 ---
 title: Providers
-description: Anthropic, OpenAI, OpenRouter, Ollama — pick one or stack them. Model routing picks the cheapest model that fits.
+description: Anthropic, OpenAI, OpenRouter, Ollama, MiniMax, Moonshot — pick one or stack them. Model routing picks the cheapest model that fits.
 ---
 
-Relay-E uses the Vercel AI SDK underneath, so adding a provider is wiring an adapter into the registry. Today four are configured.
+Relay-E uses the Vercel AI SDK underneath, so adding a provider is wiring an adapter into the registry. Six providers are configured as of v0.1.0.
 
 ## What's wired
 
@@ -13,6 +13,8 @@ Relay-E uses the Vercel AI SDK underneath, so adding a provider is wiring an ada
 | **Anthropic** | Direct, lowest latency for Claude. Supports prompt caching. | `ANTHROPIC_API_KEY` |
 | **OpenAI** | GPT models, fallback / specific features. | `OPENAI_API_KEY` |
 | **Ollama** | Fully offline / on-prem. Pull models locally. | `OLLAMA_BASE_URL` |
+| **MiniMax** | Chinese LLM provider — MiniMax-Text-01, MiniMax-M1. | `MINIMAX_API_KEY` |
+| **Moonshot / Kimi** | Chinese LLM provider — moonshot-v1 series and kimi-latest. | `MOONSHOT_API_KEY` |
 
 Set **at least one**. The engine throws a clear error at startup if none are configured.
 
@@ -112,6 +114,34 @@ You can also override per request:
 ```bash
 curl ... -d '{"prompt":"...","modelKey":"claude-haiku-4-5-20251001"}'
 ```
+
+## MiniMax
+
+[MiniMax](https://www.minimaxi.com) is an OpenAI-compatible Chinese LLM provider.
+
+```bash title=".env"
+MINIMAX_API_KEY=your-key
+```
+
+| Model key | Description |
+|---|---|
+| `minimax:MiniMax-Text-01` | General purpose, long context (1M tokens) |
+| `minimax:MiniMax-M1` | Reasoning-optimised model |
+
+## Moonshot / Kimi
+
+[Moonshot AI](https://www.moonshot.cn) (Kimi) is an OpenAI-compatible Chinese LLM provider with large context windows.
+
+```bash title=".env"
+MOONSHOT_API_KEY=your-key
+```
+
+| Model key | Context | Description |
+|---|---|---|
+| `moonshot:moonshot-v1-8k` | 8k | Fast, short context |
+| `moonshot:moonshot-v1-32k` | 32k | Balanced |
+| `moonshot:moonshot-v1-128k` | 128k | Long context |
+| `moonshot:kimi-latest` | 128k | Latest Kimi model, tracks upstream |
 
 ## Adding a new provider
 
