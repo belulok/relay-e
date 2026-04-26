@@ -12,7 +12,7 @@
   <a href="https://github.com/belulok/relay-e/actions/workflows/ci.yml"><img src="https://github.com/belulok/relay-e/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/belulok/relay-e/actions/workflows/release.yml"><img src="https://github.com/belulok/relay-e/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/belulok/relay-e/pkgs/container/relay-e"><img src="https://img.shields.io/badge/ghcr.io-relay--e-blue?logo=docker" alt="Container"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-ELv2-blue.svg" alt="License: ELv2"></a>
   <a href="./.nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node"></a>
   <a href="./tsconfig.base.json"><img src="https://img.shields.io/badge/TypeScript-strict-3178C6.svg" alt="TypeScript"></a>
 </p>
@@ -312,4 +312,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md). PRs should pass `npm run typecheck` an
 
 ## License
 
-[MIT](./LICENSE) © 2026 Sebastian Belulok
+[Elastic License 2.0 (ELv2)](./LICENSE) © 2026 Sebastian Belulok.
+Source-available. Free to use and self-host; you may not offer it as a managed service to third parties.
+Contact [sebastian.belulok@pixlr.com](mailto:sebastian.belulok@pixlr.com) for commercial licensing.
