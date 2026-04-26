@@ -30,6 +30,19 @@
     },
 
     {
+      "_comment": "MONGODB — schema inferred by sampling N docs per collection. Run `npm install mongodb -w @relay-e/engine` first.",
+      "type": "mongo",
+      "id": "events_db",
+      "name": "Events Mongo",
+      "config": {
+        "url": "${EVENTS_DB_URL}",
+        "description": "User event stream (clicks, page views, conversions).",
+        "sampleSize": 5,
+        "rowLimit": 100
+      }
+    },
+
+    {
       "_comment": "HTTP — wrap any REST API behind one base URL. If you supply openApiUrl, the engine pulls the spec on boot and surfaces every endpoint to the LLM in the prompt — model writes its own calls.",
       "type": "http",
       "id": "stripe",

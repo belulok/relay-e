@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { connectors, skills, tools } from "../bootstrap/registries.js";
+import { tools } from "../bootstrap/registries.js";
+import { getTenantBundle } from "../bootstrap/tenant-registry.js";
 import { bearerAuth, errorResponses } from "../openapi/schemas.js";
 
 const SkillSchema = z
@@ -53,28 +54,30 @@ const ListToolsRoute = createRoute({
 });
 
 export const introspectionRoutes = new OpenAPIHono()
-  .openapi(ListSkillsRoute, (c) =>
-    c.json({
-      data: skills.list().map((s) => ({
+  .openapi(ListSkillsRoute, async (c) => {
+    const bundle = await getTenantBundle(c.get("tenant").tenantId);
+    return c.json({
+      data: bundle.skills.list().map((s) => ({
         name: s.name,
         description: s.description ?? null,
         tools: s.toolNames ?? [],
         connectors: s.connectorIds ?? [],
         preferred_tier: s.preferredTier ?? null,
       })),
-    }),
-  )
+    });
+  })
   .openapi(ListToolsRoute, async (c) => {
-    // Tools come from two sources: explicit in-process registrations (rare,
-    // for one-offs) and per-connector contributions (the common path).
+    // Explicit (in-process) tools + every active connector's tools, where
+    // "active" = global JSON connectors + this tenant's DB rows.
     const explicit = tools.list().map((t) => ({
       name: t.name,
       description: t.description,
       requires_approval: Boolean(t.requiresApproval),
     }));
 
+    const bundle = await getTenantBundle(c.get("tenant").tenantId);
     const fromConnectors = (
-      await Promise.all(connectors.list().map((c) => c.tools()))
+      await Promise.all(bundle.connectors.list().map((c) => c.tools()))
     )
       .flat()
       .map((t) => ({
@@ -83,7 +86,6 @@ export const introspectionRoutes = new OpenAPIHono()
         requires_approval: Boolean(t.requiresApproval),
       }));
 
-    // De-dupe by name (connector tools win if there's a clash).
     const byName = new Map<string, (typeof fromConnectors)[number]>();
     for (const t of explicit) byName.set(t.name, t);
     for (const t of fromConnectors) byName.set(t.name, t);

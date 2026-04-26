@@ -41,6 +41,18 @@ const MySqlConnectorSchema = ConnectorBaseSchema.extend({
   }),
 });
 
+const MongoConnectorSchema = ConnectorBaseSchema.extend({
+  type: z.literal("mongo"),
+  config: z.object({
+    url: z.string().min(1),
+    dbName: z.string().optional(),
+    description: z.string().optional(),
+    collectionAllowlist: z.array(z.string()).optional(),
+    rowLimit: z.number().int().positive().optional(),
+    sampleSize: z.number().int().positive().optional(),
+  }),
+});
+
 const HttpConnectorSchema = ConnectorBaseSchema.extend({
   type: z.literal("http"),
   config: z.object({
@@ -81,6 +93,7 @@ const WebSearchConnectorSchema = ConnectorBaseSchema.extend({
 const ConnectorSchema = z.discriminatedUnion("type", [
   PostgresConnectorSchema,
   MySqlConnectorSchema,
+  MongoConnectorSchema,
   HttpConnectorSchema,
   WebSearchConnectorSchema,
 ]);

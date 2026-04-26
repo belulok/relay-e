@@ -1,0 +1,288 @@
+---
+title: Connectors
+description: How customers plug their data into Relay-E without forking. Postgres, MySQL, Mongo, HTTP APIs, web search — all behind one interface.
+---
+
+A **connector** is a runtime adapter that wraps a real system (a database, an API, a search provider) and contributes two things to the engine:
+
+1. **Tools** the LLM can call (`query_<id>`, `call_<id>`, `web_search`, …).
+2. **Prompt context** describing what's queryable (DB schema, API endpoints).
+
+Skills declare which connectors they have access to. The agent loop pulls tools + context from those connectors at request time and injects the schema into the system prompt — so the LLM writes its own SQL or API calls based on **the customer's actual data**, with no hardcoded domain logic.
+
+This is what makes Relay-E domain-agnostic. The same engine ships a finance app, a support bot, a data analyst, and an internal tool.
+
+## The shape of a connector
+
+<Mermaid chart={`
+flowchart LR
+  subgraph C["Connector interface"]
+    direction TB
+    T["tools()<br/>contributes generic tools"]
+    P["getPromptContext()<br/>describes queryable surface"]
+    D["dispose()<br/>clean up on shutdown"]
+  end
+
+  subgraph Built["Built-in adapters"]
+    direction TB
+    PG["PostgresConnector<br/>schema introspection<br/>+ SQL safety layer"]
+    MY["MySQLConnector<br/>same pattern, lazy mysql2"]
+    MO["MongoConnector<br/>sample-N-docs<br/>schema inference"]
+    HT["HttpConnector<br/>any REST API<br/>+ optional OpenAPI spec"]
+    WS["WebSearchConnector<br/>Tavily / Brave / Serper"]
+  end
+
+  PG -.implements.-> C
+  MY -.implements.-> C
+  MO -.implements.-> C
+  HT -.implements.-> C
+  WS -.implements.-> C
+`} caption="Every connector implements the same three-method interface. Tools and prompt context are auto-derived." />
+
+## Two ways to register connectors
+
+### 1. Globals via JSON (system-wide)
+
+Edit `relay-e.config.json` at the repo root. These connectors are shared by every tenant — typically your own internal services or shared knowledge bases.
+
+```json
+{
+  "connectors": [
+    {
+      "type": "websearch",
+      "id": "web",
+      "name": "Web Search",
+      "config": { "provider": "tavily", "apiKeyEnv": "TAVILY_API_KEY" }
+    }
+  ]
+}
+```
+
+Restart the API to pick up changes. Globals are loaded once at boot.
+
+### 2. Per-tenant via the API (DB-stored)
+
+For multi-tenant deployments, each customer registers their **own** connectors over HTTP. Stored in Postgres, scoped by `tenant_id`, hot-reloaded — no restart, no fork.
+
+```bash
+curl -X POST http://localhost:3001/v1/connectors \
+  -H "Authorization: Bearer $TENANT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "postgres",
+    "id": "shop_db",
+    "name": "Shop DB",
+    "config": {
+      "url": "postgres://readonly@host/shop",
+      "tableAllowlist": ["orders", "customers", "products"],
+      "rowLimit": 200
+    }
+  }'
+```
+
+Returns `{ id, name, type, status }`. The next chat turn from this tenant sees the new connector — no restart required (cached for 60s, invalidated on every write).
+
+## How the loop assembles connectors per request
+
+<Mermaid chart={`
+sequenceDiagram
+  autonumber
+  participant Client
+  participant API as API server
+  participant Bundle as Tenant bundle (cached 60s)
+  participant DB as Postgres
+  participant JSON as JSON config (globals)
+  participant Loop as Agent loop
+  participant LLM
+
+  Client->>API: POST /v1/sessions/:id/messages
+  API->>Bundle: getTenantBundle(tenantId)
+  alt cache miss / TTL expired
+    Bundle->>DB: SELECT * FROM connectors WHERE tenant_id = ?
+    Bundle->>DB: SELECT * FROM skills WHERE tenant_id = ?
+    Bundle->>JSON: load global connectors + skills
+    Note over Bundle: build per-tenant ConnectorRegistry<br/>+ SkillRegistry, dedupe by id
+  end
+  Bundle-->>API: connectors + skills
+
+  API->>Loop: runAgent({ skills }, { connectors: tenantSource })
+  Loop->>Bundle: toolsFor(skill.connectorIds)
+  Loop->>Bundle: promptContextFor(skill.connectorIds)
+  Loop->>Loop: build system prompt<br/>(skill + schema + context)
+  Loop->>LLM: prompt + tools
+  LLM-->>Loop: tool call (e.g. query_shop_db)
+  Loop->>Bundle: execute tool
+  Bundle-->>Loop: rows
+  Loop-->>Client: SSE / JSON
+`} caption="Per-tenant resolution: tenant rows + JSON globals merged once and cached, then queried per turn." />
+
+## Built-in connector types
+
+### Postgres (and any other SQL DB)
+
+Schema introspection via `information_schema.columns`. The model sees:
+
+```
+### Database connector: shop_db (Shop DB)
+Available tables (read-only). Use query_shop_db:
+  - public.orders(id uuid, user_id uuid, total numeric, status text, created_at timestamptz)
+  - public.customers(id uuid, email text?, name text?, plan text)
+  - public.products(id uuid, name text, price_cents int, ...)
+
+Hard rules: SELECT/WITH only; one statement; LIMIT auto-injected at 200 rows.
+```
+
+The SQL safety layer:
+- Rejects `INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/GRANT/CREATE/MERGE/REPLACE/COPY/CALL/EXECUTE/VACUUM`
+- Blocks multi-statement payloads (the classic injection vector)
+- Strips block + line comments before keyword scan
+- Auto-injects `LIMIT 200` (or whatever you set)
+- Optional `tableAllowlist` for FROM/JOIN target restriction
+
+Pair this with a **read-only DB role** in production for defense-in-depth.
+
+### MySQL / MariaDB
+
+Same pattern as Postgres, lazy `mysql2` import:
+
+```bash
+npm install mysql2 -w @relay-e/engine
+```
+
+```json
+{
+  "type": "mysql",
+  "id": "analytics",
+  "name": "Analytics MySQL",
+  "config": { "url": "mysql://readonly@host/analytics" }
+}
+```
+
+### MongoDB
+
+Mongo doesn't have an `information_schema`, so we sample N documents per collection and infer the field shape. Best-effort, not a guarantee — but enough for the LLM to write sane filters without hallucinating field names.
+
+```bash
+npm install mongodb -w @relay-e/engine
+```
+
+```json
+{
+  "type": "mongo",
+  "id": "events",
+  "name": "Events Mongo",
+  "config": {
+    "url": "mongodb://host/events",
+    "sampleSize": 5,
+    "collectionAllowlist": ["events", "users", "sessions"]
+  }
+}
+```
+
+The model sees:
+
+```
+### Mongo connector: events (Events Mongo)
+Collections (schema inferred from sampled documents):
+  - events { _id: objectid, type: string, user_id: string, ts: date, payload: object }
+  - users  { _id: objectid, email: string, plan: string|null, created_at: date }
+
+Hard rules: read-only find only — no aggregation, no write ops.
+```
+
+The `query_events` tool only does `find` (with optional projection / sort / limit). Aggregation pipelines are roadmap — they need their own write-stage blocker (`$out`, `$merge`).
+
+### HTTP (any REST API)
+
+Wrap any base URL. Optionally pass an OpenAPI spec to surface every endpoint to the LLM:
+
+```json
+{
+  "type": "http",
+  "id": "stripe",
+  "name": "Stripe",
+  "config": {
+    "baseUrl": "https://api.stripe.com/v1",
+    "auth": { "type": "bearer", "tokenEnv": "STRIPE_SECRET_KEY" },
+    "openApiUrl": "https://example.com/stripe-openapi.json"
+  }
+}
+```
+
+Generates `call_stripe(method, path, body?, query?)`. The model picks the path based on the OpenAPI summary it was shown. Auth tokens are resolved per-request from env vars — secrets never sit in DB rows.
+
+### Web search
+
+Tavily, Brave, or Serper. Gives the LLM the ability to look up current information.
+
+```json
+{
+  "type": "websearch",
+  "id": "web",
+  "name": "Web Search",
+  "config": { "provider": "tavily", "apiKeyEnv": "TAVILY_API_KEY" }
+}
+```
+
+Generates `web_search(query, max_results)`.
+
+## Adding a new connector type
+
+To plug in a database we don't ship a connector for (SQLite, MSSQL, BigQuery, Snowflake, DuckDB, …):
+
+1. **Copy** [`packages/engine/src/connectors/mysql.ts`](https://github.com/belulok/relay-e/blob/master/packages/engine/src/connectors/mysql.ts) — it's the cleanest template.
+2. **Swap the driver import** (e.g. `mongodb` → `better-sqlite3`).
+3. **Swap the schema-introspection query** — every SQL DB has its own flavour of `information_schema`.
+4. **Add the type tag** to `ConnectorType` in `types.ts` and a case to `ConnectorRegistry.register()`.
+
+Done. The agent loop, the prompt builder, and the API surface don't change — your new connector inherits all of it.
+
+For non-SQL stores (Mongo-like, key-value, graph), use `mongo.ts` as the template — schema inference via sampling.
+
+## Composing skills with connectors
+
+A skill is mostly: a system prompt + a list of connector ids.
+
+```bash
+curl -X POST http://localhost:3001/v1/tenant-skills \
+  -H "Authorization: Bearer $TENANT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "shop-support",
+    "description": "First-line shop support agent",
+    "systemPrompt": "You are a customer support agent for an e-commerce shop. Use query_shop_db for order and customer lookups, call_stripe for billing, and web_search for general information. Cite sources when you use web_search. Never invent data — if a tool returns nothing, say so.",
+    "connectorIds": ["shop_db", "stripe", "web"],
+    "preferredTier": "balanced"
+  }'
+```
+
+When the user prompts `"where's my latest order?"`, the agent loop:
+1. Resolves `connectorIds` → `query_shop_db`, `call_stripe`, `web_search`
+2. Builds a system prompt with each connector's schema/API surface under `# Connectors`
+3. Lets the LLM pick the right tool — usually `query_shop_db` with a generated `SELECT … WHERE customer_id = … ORDER BY created_at DESC LIMIT 1`
+4. Validates the SQL (read-only, LIMIT enforced), executes
+5. Streams the answer back
+
+You wrote zero SQL. The model wrote it from the schema you registered.
+
+## Caching, invalidation, and per-tenant isolation
+
+- Each tenant's bundle (connectors + skills) is cached for `TENANT_REGISTRY_TTL_MS` (default 60s).
+- Every write through `/v1/connectors` or `/v1/tenant-skills` invalidates the cache for that tenant — the next chat turn reloads.
+- Bundles are isolated by `tenant_id` — Tenant A can't see Tenant B's connectors, and the agent loop can't cross tenant boundaries.
+- Connector instances are owned by the bundle and disposed on cache eviction (no connection leaks).
+
+## Reference
+
+| Endpoint | Verb | Purpose |
+|---|---|---|
+| `/v1/connectors` | GET | List the calling tenant's connectors |
+| `/v1/connectors` | POST | Create or upsert (idempotent on `id`) |
+| `/v1/connectors/{id}` | DELETE | Remove a tenant connector |
+| `/v1/tenant-skills` | GET | List the tenant's skills |
+| `/v1/tenant-skills` | POST | Create or upsert (idempotent on `name`) |
+| `/v1/tenant-skills/{id}` | DELETE | Remove a tenant skill |
+| `/v1/skills` | GET | All skills visible to the tenant (globals + tenant rows) |
+| `/v1/tools` | GET | All tools visible to the tenant (explicit + connector-derived) |
+
+Postman / Bruno / Insomnia: re-import [`/openapi.json`](https://relay-e-docs.vercel.app/docs/api/overview) and the new endpoints appear automatically.

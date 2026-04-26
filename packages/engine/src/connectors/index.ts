@@ -4,6 +4,7 @@ export type {
   ConnectorType,
   PostgresConnectorConfig,
   SqlConnectorConfig,
+  MongoConnectorConfig,
   HttpConnectorConfig,
   WebSearchConnectorConfig,
   MCPConnectorConfig,
@@ -12,6 +13,7 @@ export type {
 export { ConnectorRegistry } from "./registry.js";
 export { PostgresConnector } from "./postgres.js";
 export { MySQLConnector } from "./mysql.js";
+export { MongoConnector } from "./mongo.js";
 export { HttpConnector } from "./http.js";
 export { WebSearchConnector } from "./websearch.js";
 export { validateSelectSql } from "./sql-safety.js";

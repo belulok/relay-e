@@ -2,6 +2,8 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import { healthRoutes } from "./health.js";
 import { introspectionRoutes } from "./skills.js";
 import { messagesRoutes } from "./messages.js";
+import { connectorRoutes } from "./connectors.js";
+import { tenantSkillRoutes } from "./skills-crud.js";
 
 /**
  * Public route modules. Add a new file under `routes/`, import it here, and append
@@ -20,4 +22,6 @@ export const routeModules: RouteModule[] = [
   { name: "health", basePath: "/", app: healthRoutes, requiresAuth: false },
   { name: "skills", basePath: "/", app: introspectionRoutes, requiresAuth: true },
   { name: "messages", basePath: "/", app: messagesRoutes, requiresAuth: true },
+  { name: "connectors", basePath: "/", app: connectorRoutes, requiresAuth: true },
+  { name: "tenant-skills", basePath: "/", app: tenantSkillRoutes, requiresAuth: true },
 ];

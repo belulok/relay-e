@@ -68,9 +68,19 @@ export interface SqlConnectorConfig {
   rowLimit?: number;
 }
 
+export interface MongoConnectorConfig {
+  url: string;
+  dbName?: string;
+  description?: string;
+  collectionAllowlist?: string[];
+  rowLimit?: number;
+  sampleSize?: number;
+}
+
 export type ConnectorConfig =
   | { type: "postgres"; id: string; name: string; config: PostgresConnectorConfig }
   | { type: "mysql"; id: string; name: string; config: SqlConnectorConfig }
+  | { type: "mongo"; id: string; name: string; config: MongoConnectorConfig }
   | { type: "http"; id: string; name: string; config: HttpConnectorConfig }
   | { type: "websearch"; id: string; name: string; config: WebSearchConnectorConfig }
   | { type: "mcp"; id: string; name: string; config: MCPConnectorConfig };

@@ -1,6 +1,7 @@
 import { childLogger, errors, type Logger } from "@relay-e/shared";
 import type { AnyToolDefinition } from "../tools/index.js";
 import { HttpConnector } from "./http.js";
+import { MongoConnector } from "./mongo.js";
 import { MySQLConnector } from "./mysql.js";
 import { PostgresConnector } from "./postgres.js";
 import { WebSearchConnector } from "./websearch.js";
@@ -46,6 +47,10 @@ export class ConnectorRegistry {
       case "mysql":
         // mysql2 is loaded lazily by the connector — install on demand.
         connector = new MySQLConnector(cfg.id, cfg.name, cfg.config);
+        break;
+      case "mongo":
+        // mongodb is loaded lazily — install on demand.
+        connector = new MongoConnector(cfg.id, cfg.name, cfg.config);
         break;
       case "http":
         connector = new HttpConnector(cfg.id, cfg.name, cfg.config);

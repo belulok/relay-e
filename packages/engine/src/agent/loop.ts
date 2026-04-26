@@ -19,7 +19,18 @@ import {
 import type { SkillDefinition } from "../skills/index.js";
 import type { AnyToolDefinition, ToolRegistry } from "../tools/index.js";
 import type { ContextResolver, ContextBundle } from "../context/index.js";
-import type { ConnectorRegistry } from "../connectors/index.js";
+/**
+ * Minimal surface the agent loop needs from a connector source.
+ *
+ * The shared `ConnectorRegistry` already implements this — but per-request
+ * tenant-scoped registries (which combine JSON globals with DB rows) do too.
+ * Decoupling the loop from the concrete class lets the API layer pick the
+ * right source per request without leaking that into the engine.
+ */
+export interface ConnectorSource {
+  toolsFor(ids: string[]): Promise<AnyToolDefinition[]>;
+  promptContextFor(ids: string[]): Promise<string>;
+}
 import type { AgentEvent, AgentEventEmitter } from "./events.js";
 import { allocateBudget, buildSystemPrompt } from "./prompt.js";
 
@@ -49,10 +60,12 @@ export interface AgentRunDeps {
   tools: ToolRegistry;
   context: ContextResolver;
   /**
-   * Connector registry. Optional for backwards compatibility with tests
-   * that don't need connectors; production wiring always passes one in.
+   * Source of connectors for this run. Optional for backwards compatibility
+   * with tests that don't need connectors; production wiring always passes
+   * one in (typically a per-tenant adapter that merges JSON globals + DB
+   * rows).
    */
-  connectors?: ConnectorRegistry;
+  connectors?: ConnectorSource;
   logger?: Logger;
   emit?: AgentEventEmitter;
 }

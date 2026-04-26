@@ -4,6 +4,7 @@
   "pages": [
     "skills",
     "tools",
+    "connectors",
     "context-resolver",
     "agent-loop",
     "providers",

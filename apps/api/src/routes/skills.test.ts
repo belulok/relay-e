@@ -5,7 +5,11 @@ beforeAll(() => {
   process.env.DEV_API_KEY = "test_key";
 });
 
-describe("GET /v1/skills and /v1/tools", () => {
+// These endpoints now require DB + auth context (per-tenant bundle lookup).
+// They're integration tests rather than unit tests — gated on RELAY_E_TEST_DB.
+const dbDescribe = process.env.RELAY_E_TEST_DB === "1" ? describe : describe.skip;
+
+dbDescribe("GET /v1/skills and /v1/tools", () => {
   // Note: the auth middleware is mounted at the server level, not on these
   // sub-routers. These tests therefore exercise the route logic only.
 
